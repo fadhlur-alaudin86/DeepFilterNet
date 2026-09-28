@@ -20,6 +20,7 @@ from gui.core.chunker import concat_chunks, plan_chunks
 from gui.core.events import AppEvent, EventBus
 
 _WORKER_POLL_S = 0.1
+_FORMATS_CACHE: list[str] | None = None
 
 
 class JobState(str, Enum):
@@ -49,9 +50,13 @@ class Job:
 
 
 def build_output_path(src: Path, cfg: JobConfig) -> Path:
-    """Return ``cfg.output_dir / "<stem>-deep-filtered[-<n>].<fmt>"``, first free slot."""
+    """Return the first free output path honouring ``cfg.suffix_enabled``.
+
+    With the suffix enabled (default): ``<stem>-deep-filtered[-<n>].<fmt>``;
+    with it disabled: ``<stem>[-<n>].<fmt>``. ``<n>`` starts at 2 on collision.
+    """
     out_dir = Path(cfg.output_dir)
-    base = f"{src.stem}-deep-filtered"
+    base = f"{src.stem}-deep-filtered" if cfg.suffix_enabled else src.stem
     candidate = out_dir / f"{base}.{cfg.output_format}"
     n = 2
     while candidate.exists():
@@ -60,32 +65,37 @@ def build_output_path(src: Path, cfg: JobConfig) -> Path:
     return candidate
 
 
-def _ta_save_supported(fmt: str) -> bool:
-    """True if ``torchaudio.save`` can write a 1-frame file in the given format."""
+def _probe_save_formats() -> list[str]:
+    """Probe the real writer: a 1-frame df.io.save_audio per candidate format."""
     import os
     import tempfile
 
-    try:
-        import torch
-        import torchaudio as ta
+    import numpy as np
 
-        with tempfile.TemporaryDirectory() as tmp:
-            ta.save(os.path.join(tmp, f"probe.{fmt}"), torch.zeros(1, 1), 48000)
-        return True
-    except Exception:
-        return False
+    from df.io import save_audio
+
+    frame = np.ones((1, 1), dtype=np.float32)
+    supported = []
+    for fmt in ("wav", "flac", "mp3"):
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                save_audio(os.path.join(tmp, f"probe.{fmt}"), frame, sr=48000)
+            supported.append(fmt)
+        except Exception:
+            continue
+    return supported
 
 
 def supported_formats() -> list[str]:
-    """Writable output formats: wav/flac always, mp3 iff the ta.save probe succeeds.
+    """Output formats that ``df.io.save_audio`` can actually write.
 
-    wav and flac are unconditional because ``df.io.save_audio`` writes them via
-    soundfile even when the torchaudio save backend is unavailable.
+    A 1-frame file per candidate is probed through the real writer once per
+    process; the result is cached for submit() and UI calls.
     """
-    formats = ["wav", "flac"]
-    if _ta_save_supported("mp3"):
-        formats.append("mp3")
-    return formats
+    global _FORMATS_CACHE
+    if _FORMATS_CACHE is None:
+        _FORMATS_CACHE = _probe_save_formats()
+    return list(_FORMATS_CACHE)
 
 
 def _model_sr() -> int:
@@ -185,14 +195,22 @@ class JobQueue:
             self._publish_state(job)
 
     def resume(self, job_id: str) -> None:
-        """Requeue a paused job; it continues from its persisted cursors."""
+        """Requeue a paused job; drops a pause still pending on a running job."""
         with self._lock:
             job = self._find(job_id)
-            if job is None or job.state != JobState.PAUSED:
+            if job is None:
                 return
             self._pause_events[job_id].clear()
-            job.state = JobState.QUEUED
-        self._publish_state(job)
+            if job.state == JobState.PAUSED:
+                job.state = JobState.QUEUED
+                transitioned = True
+            elif job.state == JobState.RUNNING:
+                # Pause requested but no chunk boundary reached yet: cancel it.
+                transitioned = False
+            else:
+                return
+        if transitioned:
+            self._publish_state(job)
         self._wakeup.set()
 
     def cancel(self, job_id: str) -> None:
@@ -342,7 +360,13 @@ class JobQueue:
 
             status, error = self._process_file(job, path)
             if status == "paused":
-                # Keep partial parts so resume continues without repeating chunks.
+                if not (
+                    self._pause_events[job.id].is_set() or self._cancel_events[job.id].is_set()
+                ):
+                    # resume() dropped the pending pause while finalizing: keep going.
+                    continue
+                # Keep partial parts so resume continues without repeating chunks;
+                # _finalize_paused re-checks cancel and may finalize CANCELLED instead.
                 self._finalize_paused(job)
                 return
             if status == "cancelled":
@@ -437,7 +461,11 @@ class JobQueue:
 
     def _finalize_paused(self, job: Job) -> None:
         with self._lock:
-            job.state = JobState.PAUSED
+            if self._cancel_events[job.id].is_set():
+                # Cancel arrived while returning from _process_file: honor it.
+                self._mark_cancelled_locked(job)
+            else:
+                job.state = JobState.PAUSED
         self._publish_state(job)
 
     def _finalize_cancelled(self, job: Job) -> None:

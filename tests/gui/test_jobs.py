@@ -9,7 +9,7 @@ import pytest
 from gui.core import jobs as jobs_module
 from gui.core.backend import EnhancementBackend, JobConfig
 from gui.core.events import EventBus
-from gui.core.jobs import JobQueue, JobState
+from gui.core.jobs import JobQueue, JobState, supported_formats
 
 SR = 48000
 
@@ -39,14 +39,14 @@ class FakeBackend(EnhancementBackend):
         self.shutdown_called = True
 
 
-def _write_wav(path: Path, seconds: float = 0.5) -> Path:
-    """Write a tiny stereo 48 kHz wav into tmp_path using df.io.save_audio."""
+def _write_wav(path: Path, seconds: float = 0.5, sr: int = SR) -> Path:
+    """Write a tiny stereo wav into tmp_path using df.io.save_audio."""
     from df.io import save_audio
 
-    n = int(seconds * SR)
+    n = int(seconds * sr)
     t = np.linspace(0, seconds, n, endpoint=False, dtype=np.float64)
     audio = np.stack([np.sin(2 * np.pi * 440 * t), np.sin(2 * np.pi * 660 * t)])
-    save_audio(str(path), audio.astype(np.float32), sr=SR)
+    save_audio(str(path), audio.astype(np.float32), sr=sr)
     return path
 
 
@@ -276,3 +276,129 @@ def test_move_up_down_reorders_pending_jobs(tmp_path):
     queue.move_down(job_b.id)  # already last -> no-op
     assert ids() == [job_c.id, job_a.id, job_b.id], f"edge move_down must be a no-op: {ids()}"
     queue.shutdown()
+
+
+def test_supported_formats_roundtrip_via_df_io(tmp_path):
+    """every supported_formats() entry must write and load back through df.io."""
+    from df.io import load_audio, save_audio
+
+    fmts = supported_formats()
+    assert "wav" in fmts, f"wav must be supported, got {fmts}"
+    frames = 4800
+    audio = np.full((1, frames), 0.25, dtype=np.float32)
+    for i, fmt in enumerate(fmts):
+        probe = tmp_path / f"probe-{i}.{fmt}"
+        save_audio(str(probe), audio, sr=48000)
+        loaded, info = load_audio(str(probe), verbose=False)
+        assert info.sample_rate == 48000, f"{fmt}: loaded sr {info.sample_rate}"
+        assert loaded.shape[0] == audio.shape[0], f"{fmt}: channels {loaded.shape}"
+        assert loaded.shape[-1] >= 1, f"{fmt}: nothing loaded back"
+
+
+def test_pause_then_immediate_resume_never_pauses(tmp_path):
+    """pause+resume inside one chunk -> no PAUSED transition, every chunk runs once."""
+    src = _write_wav(tmp_path / "pr.wav", 2.5)
+    out_dir = tmp_path / "out"
+    cfg = JobConfig(output_dir=str(out_dir), chunk_mode="preset", chunk_size_s=1)
+    events = []
+    bus = EventBus()
+    bus.subscribe(events.append)
+    backend = FakeBackend()
+    queue = JobQueue(backend, bus)
+
+    job = queue.submit([src], cfg)
+
+    def _pause_then_resume(n):
+        if n == 1:
+            queue.pause(job.id)
+            queue.resume(job.id)
+
+    backend.on_call = _pause_then_resume
+    queue.start()
+    assert queue.wait_idle(30.0), "queue should go idle"
+    queue.shutdown()
+
+    assert job.state == JobState.DONE, f"expected DONE, got {job.state}"
+    states = [e.payload["state"] for e in events if e.type == "job_state"]
+    assert "paused" not in states, f"pending pause must be dropped, states: {states}"
+    assert len(backend.calls) == 3, f"expected 3 chunks without repeat, calls={len(backend.calls)}"
+    assert (out_dir / "pr-deep-filtered.wav").exists(), "output file missing"
+
+
+def test_cancel_during_pause_finalize_ends_cancelled(tmp_path):
+    """cancel arriving after _process_file returns 'paused' -> finalize CANCELLED."""
+    src = _write_wav(tmp_path / "cf.wav", 2.5)
+    out_dir = tmp_path / "out"
+    cfg = JobConfig(output_dir=str(out_dir), chunk_mode="preset", chunk_size_s=1)
+    backend = FakeBackend()
+
+    class _CancelDuringPauseQueue(JobQueue):
+        """Test seam: set the cancel event after _process_file returns 'paused'."""
+
+        def _process_file(self, job, path):
+            status, error = super()._process_file(job, path)
+            if status == "paused":
+                with self._lock:
+                    self._cancel_events[job.id].set()
+            return status, error
+
+    queue = _CancelDuringPauseQueue(backend, EventBus())
+    job = queue.submit([src], cfg)
+    backend.on_call = lambda n: queue.pause(job.id) if n == 1 else None
+    queue.start()
+
+    assert _wait_for(lambda: job.state == JobState.CANCELLED), f"state: {job.state}"
+    queue.shutdown()
+
+    assert job.state == JobState.CANCELLED, f"expected CANCELLED, got {job.state}"
+    assert job.file_results[str(src)] == "cancelled", f"results: {job.file_results}"
+    assert not out_dir.exists() or not any(
+        out_dir.iterdir()
+    ), f"partial output must be discarded, found: {list(out_dir.glob('*'))}"
+
+
+def test_non_48k_input_resampled_back(tmp_path):
+    """16 kHz input -> output loads at 16000 Hz, frames within +-8 of input."""
+    import soundfile as sf
+
+    sr_in = 16000
+    src = _write_wav(tmp_path / "s16.wav", 1.5, sr=sr_in)
+    out_dir = tmp_path / "out"
+    cfg = JobConfig(output_dir=str(out_dir), chunk_mode="preset", chunk_size_s=1)
+    backend = FakeBackend()
+    queue = JobQueue(backend, EventBus())
+    queue.start()
+
+    job = queue.submit([src], cfg)
+    assert queue.wait_idle(30.0), "queue should go idle"
+    queue.shutdown()
+
+    assert job.state == JobState.DONE, f"expected DONE, got {job.state}"
+    out_file = out_dir / "s16-deep-filtered.wav"
+    assert out_file.exists(), "output file missing"
+    in_info = sf.info(str(src))
+    out_info = sf.info(str(out_file))
+    assert out_info.samplerate == sr_in, f"expected {sr_in} Hz, got {out_info.samplerate}"
+    assert (
+        abs(out_info.frames - in_info.frames) <= 8
+    ), f"frames {out_info.frames} vs input {in_info.frames} (tolerance 8)"
+
+
+def test_suffix_disabled_keeps_original_name(tmp_path):
+    """suffix_enabled=False -> y.wav first run, y-2.wav on collision."""
+    src = _write_wav(tmp_path / "y.wav", 0.5)
+    out_dir = tmp_path / "out"
+    cfg = JobConfig(output_dir=str(out_dir), suffix_enabled=False)
+    queue = JobQueue(FakeBackend(), EventBus())
+    queue.start()
+
+    job1 = queue.submit([src], cfg)
+    assert queue.wait_idle(30.0), "first job should finish"
+    job2 = queue.submit([src], cfg)
+    assert queue.wait_idle(30.0), "second job should finish"
+    queue.shutdown()
+
+    assert job1.state == JobState.DONE, f"job1 state: {job1.state}"
+    assert job2.state == JobState.DONE, f"job2 state: {job2.state}"
+    names = sorted(p.name for p in out_dir.iterdir())
+    assert names == ["y-2.wav", "y.wav"], f"unexpected output names: {names}"
