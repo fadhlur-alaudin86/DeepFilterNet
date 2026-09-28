@@ -2,11 +2,12 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-
-import numpy as np
-import torch
+from typing import TYPE_CHECKING
 
 from gui.core.device import apply_device
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,7 @@ class EnhancementBackend(ABC):
     """Interface for pluggable enhancement backends."""
 
     @abstractmethod
-    def enhance_chunk(self, audio: np.ndarray, cfg: JobConfig) -> np.ndarray:
+    def enhance_chunk(self, audio: "np.ndarray", cfg: JobConfig) -> "np.ndarray":
         """Enhance one audio chunk under the given job configuration."""
 
     @abstractmethod
@@ -68,7 +69,12 @@ class InProcessBackend(EnhancementBackend):
             self._cache[key] = (model, df_state)
         return self._cache[key]
 
-    def enhance_chunk(self, audio: np.ndarray, cfg: JobConfig) -> np.ndarray:
+    def enhance_chunk(self, audio: "np.ndarray", cfg: JobConfig) -> "np.ndarray":
+        # Lazy imports: torch/numpy must not load at module import (global
+        # constraint) so a torch-less environment can still start degraded.
+        import numpy as np
+        import torch
+
         model, df_state = self._ensure_model(cfg)
         from df.enhance import enhance
 

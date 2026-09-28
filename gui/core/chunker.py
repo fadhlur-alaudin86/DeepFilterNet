@@ -1,6 +1,9 @@
 """In-memory audio chunk planner — pure numpy/stdlib, no df/torch imports."""
 
-import numpy as np
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
 
 AUTO_THRESHOLD_S = 120
 AUTO_CHUNK_S = 60
@@ -45,6 +48,9 @@ def plan_chunks(
     return chunks
 
 
-def concat_chunks(parts: list[np.ndarray]) -> np.ndarray:
+def concat_chunks(parts: list["np.ndarray"]) -> "np.ndarray":
     """Concatenate a list of audio chunk arrays along the last axis."""
+    # Lazy import: numpy must not load at module import (global constraint).
+    import numpy as np
+
     return np.concatenate(parts, axis=-1)
