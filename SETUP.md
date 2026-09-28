@@ -29,10 +29,29 @@ cd DeepFilterNet
 
 python -m venv .venv
 source .venv/bin/activate        # Linux/macOS
-# .venv\Scripts\activate         # Windows
+```
 
+Linux/macOS:
+
+```bash
 python -m pip install --upgrade pip
 pip install -r requirements.txt -r requirements-gui.txt
+
+python -m gui
+```
+
+Windows: `requirements.txt` is a Linux-only CUDA freeze (its
+`nvidia-nccl-cu13`, `nvidia-nvshmem-cu13` and `triton` pins have no
+`win_amd64` wheels), so install the CPU-only stack used by the Windows CI
+leg instead:
+
+```powershell
+.venv\Scripts\activate
+
+python -m pip install --upgrade pip
+python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -r requirements-gui.txt
+python -m pip install soundfile loguru deepfilterlib pytest
 
 python -m gui
 ```
@@ -154,6 +173,11 @@ collected as hidden imports.
   Windows-safe), and runs the tests with `PYTHONPATH=DeepFilterNet`. The
   Linux job keeps installing `requirements.txt` unchanged; both legs run the
   same test command and the same `flet pack` build.
+- **Windows source runs need `PYTHONPATH`.** Unlike the CI leg (which sets
+  `PYTHONPATH=DeepFilterNet` in the workflow), the Windows install sequence
+  above does not pip-install the `DeepFilterNet` package, so use the
+  `PYTHONPATH` note under Running from Source or the app falls back to the
+  first-run managed runtime instead of the `.venv` you just created.
 - **Packaged `--selftest` fails (exit 1).** Two independent causes, both
   outside the packaging configuration:
   1. With `torch` excluded, startup treats the environment as incomplete
@@ -198,11 +222,14 @@ because the two legs use different torch stacks:
   executable and a `.desktop` entry. Runtime system libraries:
   `libglib2.0-0`, `libgl1`; `ffmpeg` is optional and only needed by the
   CLI.
-- **Windows (primary):** identical commands; the executable is built as
+- **Windows (primary):** source runs use the CPU-only install sequence
+  above (do not install `requirements.txt` there); the packaging commands
+  are otherwise identical, and the executable is built as
   `dist/DeepFilterNet-GUI.exe` (pass `-D` for a one-folder bundle). The
   managed runtime uses `venv\Scripts\python.exe`, and the packaged app
-  runs without a console window. Building `pyDF` requires the Visual Studio
-  Build Tools C++ workload (present on GitHub-hosted runners).
+  runs without a console window. Building `pyDF` from source (instead of
+  the prebuilt `deepfilterlib` wheel) requires the Visual Studio Build
+  Tools C++ workload (present on GitHub-hosted runners).
 - **macOS (best-effort):** `flet pack` can produce an `.app` bundle, but
   macOS packaging is not verified by this repository's CI and no release
   artifacts are published for it.
