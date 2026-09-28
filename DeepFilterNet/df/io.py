@@ -6,16 +6,41 @@ import torch
 import torchaudio as ta
 from loguru import logger
 from numpy import ndarray
+import numpy as np
 from torch import Tensor
 
-# Compatibility shim for torchaudio >= 2.9 which removed torchaudio.backend.common.AudioMetaData
-# Try to import from the new location first, then fall back to the legacy location,
-# and finally define a minimal dataclass replacement if neither is available.
+from df.logger import warn_once
+from df.utils import download_file, get_cache_dir, get_git_root
+
+# --- soundfile import (independent of AudioMetaData chain) ---
+try:
+    import soundfile as sf
+except ImportError:
+    sf = None
+
+# --- AudioMetaData import chain and resample constants ---
+# Three-tier import for AudioMetaData, with constants determined by the tier.
+
+# Tier 1: Try new torchaudio where AudioMetaData is at top level
 try:
     from torchaudio import AudioMetaData
+
+    # Modern torchaudio >= 2.9 uses these sinc constants
+    SINC = "sinc_interp_hann"
+    KAISER = "sinc_interp_kaiser"
+
+# Tier 2: Try legacy torchaudio where AudioMetaData is under backend.common
 except ImportError:
     try:
         from torchaudio.backend.common import AudioMetaData  # type: ignore
+
+        # Legacy torchaudio < 2.9 uses these constants
+        SINC = "sinc_interpolation"
+        KAISER = "kaiser_window"
+
+    # Tier 3: Define minimal AudioMetaData dataclass fallback
+    # This tier is reached when neither import works (e.g., torchaudio 2.11+)
+    # removed both the top-level and backend.common AudioMetaData
     except ImportError:
 
         @dataclass
@@ -26,14 +51,9 @@ except ImportError:
             bits_per_sample: int = 0
             encoding: str = ""
 
-
-try:
-    import soundfile as sf
-except ImportError:
-    sf = None
-
-from df.logger import warn_once
-from df.utils import download_file, get_cache_dir, get_git_root
+        # torchaudio 2.11 uses modern constants; keep them consistent
+        SINC = "sinc_interp_hann"
+        KAISER = "sinc_interp_kaiser"
 
 
 def load_audio(
@@ -98,8 +118,12 @@ def load_audio(
         info = ta.info(file, **ikwargs)
     except (AttributeError, ImportError):
         # torchaudio.info may not be available in some builds; load a 1-frame stub to get sr
-        temp_audio, orig_sr = ta.load(file, num_frames=1)
-        info = AudioMetaData(sample_rate=orig_sr)
+        try:
+            temp_audio, orig_sr = ta.load(file, num_frames=1)
+            info = AudioMetaData(sample_rate=orig_sr)
+        except Exception:
+            # Last resort: create minimal metadata
+            info = AudioMetaData(sample_rate=48000)
 
     if "num_frames" in kwargs and sr is not None:
         kwargs["num_frames"] *= info.sample_rate // sr
@@ -138,7 +162,10 @@ def save_audio(
             audio_np = torch.as_tensor(audio).cpu().numpy()
             if audio_np.ndim == 2:
                 audio_np = audio_np.T
-            sf.write(outpath, audio_np, sr)
+            # Convert to float32 in [-1, 1] if needed, and write with FLOAT subtype
+            if audio_np.dtype != np.float32:
+                audio_np = audio_np.astype(np.float32)
+            sf.write(outpath, audio_np, sr, subtype="FLOAT")
             return
         except Exception as e:
             logger.warning(f"Soundfile failed to save audio ({e}). Falling back to torchaudio.")
@@ -165,35 +192,24 @@ def save_audio(
     ta.save(outpath, audio, sr)
 
 
-# The resampling method names depend on the resample implementation that is actually
-# available: torchaudio >= 2.1 exposes `torchaudio.functional.resample`, which expects the
-# modern "sinc_interp_*" names, while older versions only provide the Kaldi
-# `resample_waveform`, which expects the legacy names. Both are selected here together so
-# that the constants can never disagree with the bound function.
 try:
     from torchaudio.functional import resample as ta_resample
-
-    TA_RESAMPLE_SINC = "sinc_interp_hann"
-    TA_RESAMPLE_KAISER = "sinc_interp_kaiser"
 except ImportError:
     from torchaudio.compliance.kaldi import resample_waveform as ta_resample  # type: ignore
-
-    TA_RESAMPLE_SINC = "sinc_interpolation"
-    TA_RESAMPLE_KAISER = "kaiser_window"
 
 
 def get_resample_params(method: str) -> Dict[str, Any]:
     params = {
-        "sinc_fast": {"resampling_method": TA_RESAMPLE_SINC, "lowpass_filter_width": 16},
-        "sinc_best": {"resampling_method": TA_RESAMPLE_SINC, "lowpass_filter_width": 64},
+        "sinc_fast": {"resampling_method": SINC, "lowpass_filter_width": 16},
+        "sinc_best": {"resampling_method": SINC, "lowpass_filter_width": 64},
         "kaiser_fast": {
-            "resampling_method": TA_RESAMPLE_KAISER,
+            "resampling_method": KAISER,
             "lowpass_filter_width": 16,
             "rolloff": 0.85,
             "beta": 8.555504641634386,
         },
         "kaiser_best": {
-            "resampling_method": TA_RESAMPLE_KAISER,
+            "resampling_method": KAISER,
             "lowpass_filter_width": 16,
             "rolloff": 0.9475937167399596,
             "beta": 14.769656459379492,
