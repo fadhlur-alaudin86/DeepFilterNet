@@ -4,8 +4,8 @@ import time
 
 import numpy as np
 import pytest
-
 from conftest import FakeBackend, make_wav
+
 from gui.core import jobs as jobs_module
 from gui.core.backend import JobConfig
 from gui.core.events import EventBus
