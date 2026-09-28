@@ -17,12 +17,13 @@ from pathlib import Path
 from typing import Any
 
 import flet as ft
+import platformdirs
 
 from gui.core import jobs as jobs_core
 from gui.core.backend import InProcessBackend
 from gui.core.config import ConfigStore
 from gui.core.dependency import RuntimeInfo, current_env_ready
-from gui.core.events import AppEvent, EventBus
+from gui.core.events import AppEvent, EventBus, setup_df_log_bridge, setup_logging
 from gui.core.jobs import JobQueue, supported_formats
 from gui.ui.pages import EnhanceView, LogView, QueueView, SettingsView
 
@@ -100,7 +101,7 @@ class DeepFilterApp:
         self.views = [
             EnhanceView(cfg, queue, bus),
             QueueView(queue, bus),
-            LogView(bus),
+            LogView(bus, cfg),
             SettingsView(cfg, bus),
         ]
         if self.degraded:
@@ -342,7 +343,17 @@ def main(page: ft.Page, runtime: RuntimeInfo | None = None) -> None:
     """
     cfg = ConfigStore()
     bus = EventBus()
-    queue = JobQueue(InProcessBackend(), bus)
+    # Logging first (spec 10): the rotating enhance.log plus the loguru
+    # bridge that feeds both the file and the Log view. The bridge is
+    # re-installed after each model init because df's init_logger wipes
+    # loguru sinks via logger.remove().
+    run_level = str(cfg.get("log_level") or "INFO")
+    setup_logging(bus, run_level, Path(platformdirs.user_log_dir("deepfilternet-gui")))
+    setup_df_log_bridge(bus, run_level)
+    backend = InProcessBackend(
+        on_model_ready=lambda: setup_df_log_bridge(bus, str(cfg.get("log_level") or "INFO"))
+    )
+    queue = JobQueue(backend, bus)
     app = DeepFilterApp(page, cfg, bus, queue, runtime=runtime)
     page.title = "DeepFilterNet"
     page.add(app.build())

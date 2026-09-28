@@ -116,3 +116,67 @@ def test_log_bridge_forwards_loguru_to_bus():
         assert hello.payload["level"] == "INFO"
     finally:
         logger.remove(sink_id)
+
+
+def test_setup_logging_formatter_has_timestamps(tmp_path):
+    root = logging.getLogger()
+    saved_level = root.level
+    saved_handlers = list(root.handlers)
+    try:
+        log_path = setup_logging(EventBus(), "INFO", tmp_path)
+        (tmp_path / "enhance.log").write_text("", encoding="utf-8")
+        root.warning("timestamp-marker")
+        for handler in root.handlers:
+            handler.flush()
+        line = log_path.read_text(encoding="utf-8").strip().splitlines()[-1]
+        assert "timestamp-marker" in line
+        # "%Y-%m-%d %H:%M:%S WARNING df:" — date, time, level, logger name.
+        assert line[:4].isdigit() and "WARNING" in line
+    finally:
+        for handler in list(root.handlers):
+            if handler not in saved_handlers:
+                root.removeHandler(handler)
+                handler.close()
+        root.setLevel(saved_level)
+
+
+def test_setup_logging_idempotent_for_same_dir(tmp_path):
+    root = logging.getLogger()
+    saved_level = root.level
+    saved_handlers = list(root.handlers)
+    try:
+        setup_logging(EventBus(), "INFO", tmp_path)
+        setup_logging(EventBus(), "INFO", tmp_path)
+        added = [
+            handler
+            for handler in root.handlers
+            if handler not in saved_handlers
+            and isinstance(handler, logging.handlers.RotatingFileHandler)
+        ]
+        assert len(added) == 1
+    finally:
+        for handler in list(root.handlers):
+            if handler not in saved_handlers:
+                root.removeHandler(handler)
+                handler.close()
+        root.setLevel(saved_level)
+
+
+def test_log_bridge_reinstall_keeps_single_sink():
+    bus = EventBus()
+    received: list[AppEvent] = []
+    bus.subscribe(received.append)
+    setup_df_log_bridge(bus, "INFO")
+    first_sink_id = setup_df_log_bridge.last_sink_id
+    try:
+        setup_df_log_bridge(bus, "INFO")  # e.g. after df wiped sinks
+        assert setup_df_log_bridge.last_sink_id != first_sink_id
+        logger.info("single-sink-marker")
+        matches = [
+            event
+            for event in received
+            if event.type == "log" and "single-sink-marker" in event.payload["text"]
+        ]
+        assert len(matches) == 1
+    finally:
+        logger.remove(setup_df_log_bridge.last_sink_id)

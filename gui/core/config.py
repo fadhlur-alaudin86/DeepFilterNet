@@ -23,6 +23,7 @@ DEFAULTS: dict[str, Any] = {
     "output_format": "wav",
     "suffix_enabled": True,
     "log_level": "INFO",
+    "log_view_level": "INFO",
     "theme_mode": "SYSTEM",
     "window_width": 1100,
     "window_height": 760,

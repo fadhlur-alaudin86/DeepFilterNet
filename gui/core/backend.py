@@ -1,6 +1,7 @@
 """In-process enhancement backend for DeepFilterNet GUI."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -48,8 +49,12 @@ class EnhancementBackend(ABC):
 class InProcessBackend(EnhancementBackend):
     """Enhances audio chunks in-process, keeping one loaded model per config."""
 
-    def __init__(self) -> None:
+    def __init__(self, on_model_ready: Callable[[], None] | None = None) -> None:
         self._cache: dict[tuple, tuple] = {}
+        # Runs after each first-time model init: df's init_logger calls
+        # logger.remove(), wiping loguru sinks (e.g. the log bridge), so the
+        # app re-installs them here. None keeps the backend standalone.
+        self._on_model_ready = on_model_ready
 
     def _ensure_model(self, cfg: JobConfig) -> tuple[object, object]:
         apply_device(cfg.device)
@@ -67,6 +72,8 @@ class InProcessBackend(EnhancementBackend):
                 mask_only=cfg.no_df_stage,
             )
             self._cache[key] = (model, df_state)
+            if self._on_model_ready is not None:
+                self._on_model_ready()
         return self._cache[key]
 
     def enhance_chunk(self, audio: "np.ndarray", cfg: JobConfig) -> "np.ndarray":

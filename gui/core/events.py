@@ -11,6 +11,28 @@ from pathlib import Path
 
 from loguru import logger
 
+# enhance.log line layout (spec 10): one timestamped record per line.
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+# Loguru records are forwarded into stdlib logging under this logger name;
+# they propagate to the rotating handler from setup_logging, which stays
+# enhance.log's only writer (df passes log_file=None to init_df).
+FORWARD_LOGGER_NAME = "df"
+
+# loguru severity name -> stdlib level number for the file forward.
+# TRACE(5) and SUCCESS(25) have no stdlib counterpart; they are kept as-is
+# so the file preserves df's original severity ordering.
+_LOGURU_TO_STD = {
+    "TRACE": 5,
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "SUCCESS": 25,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+
 
 @dataclass(frozen=True)
 class AppEvent:
@@ -73,27 +95,53 @@ def setup_logging(bus: EventBus, level: str, log_dir: Path) -> Path:
 
     Returns log_dir / "enhance.log". The bus parameter is part of the
     interface (log forwarding to the bus is owned by setup_df_log_bridge)
-    and is unused in v1.
+    and is unused in v1. Idempotent: a second call for the same file adds
+    no handler (repeated app starts in one process must not duplicate lines).
     """
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "enhance.log"
-    handler = logging.handlers.RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=3)
     root = logging.getLogger()
+    for handler in root.handlers:
+        if (
+            isinstance(handler, logging.handlers.RotatingFileHandler)
+            and Path(handler.baseFilename) == log_path
+        ):
+            root.setLevel(level)
+            return log_path
+    handler = logging.handlers.RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=3)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
     root.addHandler(handler)
     root.setLevel(level)
     return log_path
 
 
 def setup_df_log_bridge(bus: EventBus, level: str) -> None:
-    """Forward loguru records to the bus as "log" events.
+    """Forward loguru records to the bus as "log" events and to enhance.log.
+
+    The bus event drives the Log view console; the same record is forwarded
+    into stdlib logging under FORWARD_LOGGER_NAME so it also lands in the
+    rotating enhance.log handler (with timestamps) without a second file
+    writer. Idempotent: re-installs a single sink, removing the previous
+    one — required because df's init_logger calls logger.remove() on the
+    first init_df(), silently deleting this sink (re-install after model
+    init via InProcessBackend's on_model_ready hook).
 
     The sink id is exposed as setup_df_log_bridge.last_sink_id so it can be
     removed later via loguru.logger.remove(...).
     """
-    sink_id = logger.add(
-        lambda m: bus.publish(
-            AppEvent("log", {"level": m.record["level"].name, "text": str(m).rstrip()})
-        ),
-        level=level,
-    )
+
+    def _sink(message) -> None:
+        record = message.record
+        name = str(record["level"].name).upper()
+        text = str(record["message"]).rstrip()
+        bus.publish(AppEvent("log", {"level": name, "text": text}))
+        logging.getLogger(FORWARD_LOGGER_NAME).log(_LOGURU_TO_STD.get(name, logging.INFO), text)
+
+    old_sink_id = getattr(setup_df_log_bridge, "last_sink_id", None)
+    if old_sink_id is not None:
+        try:
+            logger.remove(old_sink_id)
+        except ValueError:
+            pass  # already removed (e.g. by df's init_logger)
+    sink_id = logger.add(_sink, level=level)
     setup_df_log_bridge.last_sink_id = sink_id

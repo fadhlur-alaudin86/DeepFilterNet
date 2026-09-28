@@ -1,10 +1,12 @@
 """Log view: filterable enhancement log console (Task 11).
 
 Wraps the shared ``Console`` widget: bus ``log`` events are forwarded to
-the console's ring buffer, and the selected level is persisted to the
-``ConfigStore`` under ``log_level``. The config store is optional so the
-app skeleton can keep constructing ``LogView(bus)``; without one the
-default user config path is used (same file ``main()`` loads).
+the console's ring buffer, and the selected filter level is persisted to
+the ``ConfigStore`` under ``log_view_level`` (a display-only filter; the
+run/file level ``log_level`` belongs to the Enhance view and the backend).
+Pass the shared app ``ConfigStore`` so the filter survives restarts next
+to the other persisted keys; without one the default user config path is
+used (same file ``main()`` loads).
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ class LogView:
     def __init__(self, bus: EventBus, cfg: ConfigStore | None = None) -> None:
         self.bus = bus
         self.cfg = cfg if cfg is not None else ConfigStore()
-        stored = str(self.cfg.get("log_level") or "INFO").upper()
+        stored = str(self.cfg.get("log_view_level") or "INFO").upper()
         self.console = Console(
             level_filter=stored,
             on_level_change=self._persist_level,
@@ -55,6 +57,6 @@ class LogView:
             self.console.append(event)
 
     def _persist_level(self, level: str) -> None:
-        """Write the chosen console level back to the ConfigStore."""
-        self.cfg.set("log_level", level)
+        """Write the chosen console filter level back to the ConfigStore."""
+        self.cfg.set("log_view_level", level)
         self.cfg.save()

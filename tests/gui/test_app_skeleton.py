@@ -86,7 +86,7 @@ def test_all_views_build_controls(tmp_path):
     views = [
         EnhanceView(cfg, queue, bus),
         QueueView(queue, bus),
-        LogView(bus),
+        LogView(bus, cfg),
         SettingsView(cfg, bus),
     ]
     for view in views:
