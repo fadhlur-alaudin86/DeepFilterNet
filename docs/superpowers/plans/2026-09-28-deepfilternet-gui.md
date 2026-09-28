@@ -622,7 +622,7 @@ Create `.github/workflows/build-gui.yml` modeled on `git show 7d066a2:.github/wo
 
 - [ ] **Step 4: Lint + verify workflow syntax + commit**
 
-Run: `black --check gui tests && flake8 gui tests && .venv/bin/python -m pytest tests/gui -m "not e2e" -v`
+Run: `black --check gui tests && isort --check-only gui tests && flake8 gui tests && .venv/bin/python -m pytest tests/gui -m "not e2e" -v`
 Expected: all green.
 
 ```bash
