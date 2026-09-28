@@ -426,7 +426,7 @@ git commit -m "feat(gui): add managed runtime bootstrap and process relaunch"
 
 **Interfaces:**
 - Consumes: Task 1 `ConfigStore`, Task 6 `EventBus`, Task 7 `JobQueue` (constructed but not started).
-- Produces: `class DeepFilterApp` with `build() -> ft.Control` (root column: `NavigationRail` + view container + status bar); view classes `EnhanceView(cfg: ConfigStore, queue: JobQueue, bus: EventBus)`, `QueueView(queue, bus)`, `LogView(bus)`, `SettingsView(cfg: ConfigStore)` each with `build() -> ft.Control` (placeholder content in this task); `main(page: ft.Page)` entry in `gui/app.py`; `gui/main.py` runs `ft.app(target=gui.app.main)`.
+- Produces: `class DeepFilterApp` with `build() -> ft.Control` (root column: `NavigationRail` + view container + status bar); view classes `EnhanceView(cfg: ConfigStore, queue: JobQueue, bus: EventBus)`, `QueueView(queue, bus)`, `LogView(bus)`, `SettingsView(cfg: ConfigStore)` each with `build() -> ft.Control` (placeholder content in this task); `main(page: ft.Page)` entry in `gui/app.py`; `gui/main.py` runs `ft.run(gui.app.main)` (flet 1.0 renamed ft.app).
 
 - [ ] **Step 1: Write the failing test**
 
