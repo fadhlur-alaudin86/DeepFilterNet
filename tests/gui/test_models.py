@@ -1,10 +1,10 @@
 """Tests for the DeepFilterNet model registry."""
 
-import pytest
-from pathlib import Path
 from importlib import import_module
 
-from gui.core.models import ModelError, PRESETS, resolve_model_dir, ensure_model, model_choices
+import pytest
+
+from gui.core.models import ModelError, ensure_model, resolve_model_dir
 
 
 def _get_enhance_module():
@@ -61,7 +61,9 @@ def test_ensure_model_exhausts_attempts(monkeypatch):
     # side_effect always SystemExit -> ModelError, called exactly `attempts` times
     enhance_mod = _get_enhance_module()
 
-    monkeypatch.setattr(enhance_mod, "maybe_download_model", lambda name: (_ for _ in ()).throw(SystemExit(1)))
+    monkeypatch.setattr(
+        enhance_mod, "maybe_download_model", lambda name: (_ for _ in ()).throw(SystemExit(1))
+    )
 
     with pytest.raises(ModelError):
         ensure_model("DeepFilterNet", attempts=3)

@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-
 PRESETS: tuple[str, ...] = ("DeepFilterNet", "DeepFilterNet2", "DeepFilterNet3")
 
 
@@ -27,7 +26,9 @@ def resolve_model_dir(model: str) -> str:
     # Custom path: must contain config.ini
     p = Path(model)
     if not p.is_dir() or not (p / "config.ini").is_file():
-        raise ModelError(f"Custom path {model!r} is not a valid model directory (missing config.ini)")
+        raise ModelError(
+            f"Custom path {model!r} is not a valid model directory (missing config.ini)"
+        )
     return str(p)
 
 
