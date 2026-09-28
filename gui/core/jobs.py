@@ -66,13 +66,21 @@ def build_output_path(src: Path, cfg: JobConfig) -> Path:
 
 
 def _probe_save_formats() -> list[str]:
-    """Probe the real writer: a 1-frame df.io.save_audio per candidate format."""
+    """Probe the real writer: a 1-frame df.io.save_audio per candidate format.
+
+    Returns ``[]`` when ``df.io`` cannot be imported (e.g. torch-less frozen
+    bundles, where importing ``df`` fails), so view construction degrades to
+    an empty format list instead of crashing (R17).
+    """
     import os
     import tempfile
 
     import numpy as np
 
-    from df.io import save_audio
+    try:
+        from df.io import save_audio
+    except ImportError:
+        return []
 
     frame = np.ones((1, 1), dtype=np.float32)
     supported = []
@@ -90,7 +98,8 @@ def supported_formats() -> list[str]:
     """Output formats that ``df.io.save_audio`` can actually write.
 
     A 1-frame file per candidate is probed through the real writer once per
-    process; the result is cached for submit() and UI calls.
+    process; the result is cached for submit() and UI calls. Empty list when
+    ``df.io`` is unimportable (degraded/torch-less environments).
     """
     global _FORMATS_CACHE
     if _FORMATS_CACHE is None:

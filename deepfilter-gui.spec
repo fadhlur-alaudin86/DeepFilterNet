@@ -17,9 +17,15 @@ from PyInstaller.utils.hooks import collect_submodules
 
 REPO_ROOT = Path(".")
 
-# Data files: the Flet GUI has no static assets of its own (gui/resources is
-# empty); flet's own PyInstaller hooks ship the runtime assets.
-datas = []
+# Data files: flet's own PyInstaller hooks ship its runtime assets; the
+# DeepFilterNet and gui source trees are bundled as data so the frozen app
+# can pip-install df (dependency.package_source) and put the bundled gui
+# package on the child process PYTHONPATH (dependency.gui_source_parent).
+# Keep in sync with the --add-data flags in SETUP.md.
+datas = [
+    ("DeepFilterNet", "DeepFilterNet"),
+    ("gui", "gui"),
+]
 
 # Hidden imports: gui submodules are reached through deferred imports inside
 # view builders and gui/main.py, flet is imported lazily at startup.

@@ -49,7 +49,7 @@ def test_detect_cuda_tag_parses_nvidia_smi(monkeypatch):
 
 
 def test_ensure_runtime_installs_in_order(monkeypatch, tmp_path):
-    # recorded pip calls: [torch --index-url .../cu128, ./DeepFilterNet, flet platformdirs];
+    # recorded pip calls: [torch --index-url .../cu128, package_source(), flet platformdirs];
     # progress called with phase labels "venv", "torch", "deps"
     created = []
     pip_calls = []
@@ -74,7 +74,7 @@ def test_ensure_runtime_installs_in_order(monkeypatch, tmp_path):
     assert "install torch" in torch_cmd
     assert "--index-url https://download.pytorch.org/whl/cu128" in torch_cmd
 
-    assert "./DeepFilterNet" in pip_calls[1][0]
+    assert str(dep.package_source()) in pip_calls[1][0]
 
     deps_cmd = " ".join(pip_calls[2][0])
     assert "flet" in deps_cmd

@@ -86,10 +86,14 @@ On startup the GUI checks whether the current process can import `torch`,
   the managed runtime. The app then:
   1. Creates a virtualenv at `<user data dir>/deepfilternet-gui/runtime/venv`
      (`~/.local/share/deepfilternet-gui/runtime/venv` on Linux,
-     `%LOCALAPPDATA%\deepfilternet-gui\runtime\venv` on Windows).
+     `%LOCALAPPDATA%\deepfilternet-gui\runtime\venv` on Windows). Source runs
+     use the current interpreter; a packaged run resolves `python3` (then
+     `python`) from `PATH` and runs `<interpreter> -m venv`, because the
+     frozen binary cannot create a venv from itself (see Known Limitations).
   2. Installs `torch` (CUDA wheel index when `nvidia-smi` reports a CUDA
-     version, CPU wheel otherwise), the local `./DeepFilterNet` package,
-     then `flet` and `platformdirs` (see
+     version, CPU wheel otherwise), the local `./DeepFilterNet` package
+     (the bundled `DeepFilterNet/` data directory in a packaged run), then
+     `flet` and `platformdirs` (see
      `requirements-gui-runtime.txt` for the manifest).
   3. Relaunches the GUI process inside that managed runtime.
 - **First enhancement** downloads the DeepFilterNet model weights into the
@@ -124,11 +128,22 @@ Please install PyInstaller module to use flet pack command: No module named 'PyI
 ```bash
 flet pack gui/main.py --name DeepFilterNet-GUI \
   --pyinstaller-build-args=--exclude-module=torch \
-  --pyinstaller-build-args=--exclude-module=tensorflow
+  --pyinstaller-build-args=--exclude-module=tensorflow \
+  --add-data "DeepFilterNet:DeepFilterNet" \
+  --add-data "gui:gui"
 ```
 
-Output on Linux: `dist/DeepFilterNet-GUI` (single-file executable, about
-66 MB) plus `dist/DeepFilterNet-GUI.desktop`.
+The two `--add-data` flags bundle the `DeepFilterNet/` and `gui/` source
+trees as data, mirroring the `datas` entries in `deepfilter-gui.spec` (keep
+them in sync): the packaged app pip-installs the bundled `DeepFilterNet/`
+into the managed runtime and puts the bundled `gui/` directory on the child
+process `PYTHONPATH`. PyInstaller separates source and destination with
+`os.pathsep`, so on Windows use `;` instead of `:` (`--add-data
+"DeepFilterNet;DeepFilterNet"`).
+
+Output on Linux: `dist/DeepFilterNet-GUI` (single-file executable; the size
+grows with the bundled `DeepFilterNet/` and `gui/` data trees) plus
+`dist/DeepFilterNet-GUI.desktop`.
 
 `torch` and `tensorflow` must never be bundled (the managed runtime
 provides them later). Without the excludes the bundle grows to about 2.6 GB
@@ -148,15 +163,18 @@ pyinstaller deepfilter-gui.spec --noconfirm --clean
 
 Output: `dist/DeepFilterNet-GUI/` containing the `DeepFilterNet-GUI`
 executable. The spec entry point is `gui/main.py`; the same
-`torch`/`tensorflow` excludes are baked in, and `gui`/`flet` submodules are
-collected as hidden imports.
+`torch`/`tensorflow` excludes are baked in, `gui`/`flet` submodules are
+collected as hidden imports, and the `DeepFilterNet/` and `gui/` source
+trees are bundled as data via `datas` (same entries as the `--add-data`
+flags above).
 
 ### Verification
 
 - Source environment: `python -m gui --selftest` must print `selftest ok`
   and exit 0.
-- Packaged binary: `./dist/DeepFilterNet-GUI --selftest` currently exits
-  non-zero; see Known Limitations.
+- Packaged binary: `./dist/DeepFilterNet-GUI --selftest` has not been
+  re-run since the bootstrap and format-probe fixes (no rebuild yet); see
+  Known Limitations.
 
 ---
 
@@ -178,17 +196,32 @@ collected as hidden imports.
   above does not pip-install the `DeepFilterNet` package, so use the
   `PYTHONPATH` note under Running from Source or the app falls back to the
   first-run managed runtime instead of the `.venv` you just created.
-- **Packaged `--selftest` fails (exit 1).** Two independent causes, both
-  outside the packaging configuration:
-  1. With `torch` excluded, startup treats the environment as incomplete
-     and enters the first-run runtime bootstrap, which cannot create a
-     virtualenv inside a frozen process (`sys.executable` is the packaged
-     binary itself, so the `ensurepip` step fails with exit status 2).
-  2. Skipping the bootstrap (`--runtime-child --selftest`) fails later:
-     `EnhanceView` probes `df.io.save_audio` while building, and the
-     bundled `df` import requires `torch`, which is deliberately not
-     bundled.
-  Use the source selftest to verify a packaging environment.
+- **Packaged runs need a Python interpreter on the target machine.** The
+  frozen binary cannot create the managed venv from itself
+  (`sys.executable` is the GUI binary, so the `ensurepip` step would
+  re-run the app and fail), so the bootstrap resolves `python3` (then
+  `python`) from `PATH` and runs `<interpreter> -m venv`. A target machine
+  without Python 3.11 or newer on `PATH` cannot complete first-run setup,
+  even though the app itself is standalone.
+- **First-run setup and the first enhancement need the network.** Setup
+  pip-installs `torch`, the bundled `DeepFilterNet/` sources and
+  `flet`/`platformdirs` into the managed venv, and the first enhancement
+  downloads the model weights; there is no offline install path.
+- **The bundle ships its own `DeepFilterNet/` and `gui/` sources.** Both
+  trees are bundled as data (`datas` in `deepfilter-gui.spec`, the
+  `--add-data` flags in the `flet pack` command): `package_source()` points
+  the pip install at the bundled `DeepFilterNet/`, and
+  `gui_source_parent()` puts the bundled `gui/` directory on the child
+  process `PYTHONPATH`.
+- **Packaged `--selftest` is not re-verified after the bootstrap fixes.**
+  It used to fail (exit 1) for two reasons: the frozen process could not
+  create a virtualenv (now addressed by resolving an external interpreter
+  from `PATH`), and `EnhanceView` probed `df.io.save_audio` while building,
+  whose import needs the deliberately unbundled `torch` (now addressed by
+  degrading the probe to an empty format list when `df` is not importable).
+  Both code paths are unit-tested, but no frozen rebuild has been run since,
+  so the packaged binary's `--selftest` outcome remains unverified; use the
+  source selftest to verify a packaging environment.
 
 ---
 
