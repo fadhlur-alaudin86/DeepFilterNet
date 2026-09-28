@@ -1,53 +1,15 @@
 """Job queue and output pipeline tests for DeepFilterNet GUI."""
 
 import time
-from pathlib import Path
 
 import numpy as np
 import pytest
 
+from conftest import FakeBackend, make_wav
 from gui.core import jobs as jobs_module
-from gui.core.backend import EnhancementBackend, JobConfig
+from gui.core.backend import JobConfig
 from gui.core.events import EventBus
 from gui.core.jobs import JobQueue, JobState, supported_formats
-
-SR = 48000
-
-
-class FakeBackend(EnhancementBackend):
-    """Enhancement backend stand-in: audio * 0.5, records call shapes, armable OOM."""
-
-    def __init__(self):
-        self.calls: list[tuple] = []  # input chunk shapes, one per enhance_chunk call
-        self.oom_on_call: int | None = None  # 1-based call number that raises
-        self.on_call = None  # optional hook: fn(call_number)
-        self.shutdown_called = False
-
-    def enhance_chunk(self, audio: np.ndarray, cfg: JobConfig) -> np.ndarray:
-        n = len(self.calls) + 1
-        self.calls.append(tuple(audio.shape))
-        if self.on_call is not None:
-            self.on_call(n)
-        if self.oom_on_call == n:
-            raise RuntimeError("CUDA out of memory")
-        return audio * 0.5
-
-    def cancel(self) -> None:
-        pass
-
-    def shutdown(self) -> None:
-        self.shutdown_called = True
-
-
-def _write_wav(path: Path, seconds: float = 0.5, sr: int = SR) -> Path:
-    """Write a tiny stereo wav into tmp_path using df.io.save_audio."""
-    from df.io import save_audio
-
-    n = int(seconds * sr)
-    t = np.linspace(0, seconds, n, endpoint=False, dtype=np.float64)
-    audio = np.stack([np.sin(2 * np.pi * 440 * t), np.sin(2 * np.pi * 660 * t)])
-    save_audio(str(path), audio.astype(np.float32), sr=sr)
-    return path
 
 
 def _wait_for(predicate, timeout: float = 10.0) -> bool:
@@ -61,7 +23,7 @@ def _wait_for(predicate, timeout: float = 10.0) -> bool:
 
 def test_submit_completes_and_writes_output(tmp_path):
     """0.5s wav -> DONE, output exists, name == x-deep-filtered.wav."""
-    src = _write_wav(tmp_path / "x.wav", 0.5)
+    src = make_wav(tmp_path / "x.wav", 0.5)
     out_dir = tmp_path / "out"
     cfg = JobConfig(output_dir=str(out_dir))
     backend = FakeBackend()
@@ -83,7 +45,7 @@ def test_submit_completes_and_writes_output(tmp_path):
 
 def test_output_collision_gets_numeric_suffix(tmp_path):
     """Run twice -> second file named x-deep-filtered-2.wav."""
-    src = _write_wav(tmp_path / "x.wav", 0.5)
+    src = make_wav(tmp_path / "x.wav", 0.5)
     out_dir = tmp_path / "out"
     cfg = JobConfig(output_dir=str(out_dir))
     queue = JobQueue(FakeBackend(), EventBus())
@@ -108,7 +70,7 @@ def test_full_file_output_length_matches_input(tmp_path):
     """2.5s file, chunk 1s -> output frames == input frames."""
     import soundfile as sf
 
-    src = _write_wav(tmp_path / "long.wav", 2.5)
+    src = make_wav(tmp_path / "long.wav", 2.5)
     out_dir = tmp_path / "out"
     cfg = JobConfig(output_dir=str(out_dir), chunk_mode="preset", chunk_size_s=1)
     backend = FakeBackend()
@@ -130,7 +92,7 @@ def test_full_file_output_length_matches_input(tmp_path):
 
 def test_pause_resumes_at_next_chunk(tmp_path):
     """FakeBackend counts calls; pause during chunk 2 -> after resume total calls == n_chunks."""
-    src = _write_wav(tmp_path / "p.wav", 2.5)
+    src = make_wav(tmp_path / "p.wav", 2.5)
     out_dir = tmp_path / "out"
     cfg = JobConfig(output_dir=str(out_dir), chunk_mode="preset", chunk_size_s=1)
     backend = FakeBackend()
@@ -156,7 +118,7 @@ def test_pause_resumes_at_next_chunk(tmp_path):
 
 def test_cancel_discards_partial_output(tmp_path):
     """cancel mid-file -> state CANCELLED, no output file on disk."""
-    src = _write_wav(tmp_path / "c.wav", 2.5)
+    src = make_wav(tmp_path / "c.wav", 2.5)
     out_dir = tmp_path / "out"
     cfg = JobConfig(output_dir=str(out_dir), chunk_mode="preset", chunk_size_s=1)
     backend = FakeBackend()
@@ -178,7 +140,7 @@ def test_cancel_discards_partial_output(tmp_path):
 
 def test_failed_file_does_not_block_others(tmp_path):
     """[good.wav, bad.txt] -> job FAILED, good.wav result 'done', bad.txt starts with 'failed:'."""
-    good = _write_wav(tmp_path / "good.wav", 0.5)
+    good = make_wav(tmp_path / "good.wav", 0.5)
     bad = tmp_path / "bad.txt"
     bad.write_text("this is not audio")
     out_dir = tmp_path / "out"
@@ -199,7 +161,7 @@ def test_failed_file_does_not_block_others(tmp_path):
 
 def test_oom_error_includes_actionable_hint(tmp_path):
     """armed OOM -> file_results msg contains 'chunk' and 'CPU'."""
-    src = _write_wav(tmp_path / "o.wav", 0.5)
+    src = make_wav(tmp_path / "o.wav", 0.5)
     backend = FakeBackend()
     backend.oom_on_call = 1
     queue = JobQueue(backend, EventBus())
@@ -218,7 +180,7 @@ def test_oom_error_includes_actionable_hint(tmp_path):
 
 def test_unsupported_format_rejected_at_submit(tmp_path, monkeypatch):
     """submit(['x.wav'], output_format='mp3') without mp3 in supported_formats -> ValueError first."""
-    src = _write_wav(tmp_path / "x.wav", 0.5)
+    src = make_wav(tmp_path / "x.wav", 0.5)
     monkeypatch.setattr(jobs_module, "supported_formats", lambda: ["wav", "flac"])
     backend = FakeBackend()
     queue = JobQueue(backend, EventBus())
@@ -232,7 +194,7 @@ def test_unsupported_format_rejected_at_submit(tmp_path, monkeypatch):
 
 def test_progress_events_published(tmp_path):
     """bus captures job_progress events with monotonically nondecreasing payload['progress']."""
-    src = _write_wav(tmp_path / "g.wav", 2.5)
+    src = make_wav(tmp_path / "g.wav", 2.5)
     events = []
     bus = EventBus()
     bus.subscribe(events.append)
@@ -254,7 +216,7 @@ def test_progress_events_published(tmp_path):
 
 def test_move_up_down_reorders_pending_jobs(tmp_path):
     """move_up/move_down swap adjacent queued jobs; edge moves are no-ops."""
-    files = [_write_wav(tmp_path / f"{name}.wav", 0.1) for name in ("a", "b", "c")]
+    files = [make_wav(tmp_path / f"{name}.wav", 0.1) for name in ("a", "b", "c")]
     cfg = JobConfig(output_dir=str(tmp_path / "out"))
     queue = JobQueue(FakeBackend(), EventBus())
 
@@ -297,7 +259,7 @@ def test_supported_formats_roundtrip_via_df_io(tmp_path):
 
 def test_pause_then_immediate_resume_never_pauses(tmp_path):
     """pause+resume inside one chunk -> no PAUSED transition, every chunk runs once."""
-    src = _write_wav(tmp_path / "pr.wav", 2.5)
+    src = make_wav(tmp_path / "pr.wav", 2.5)
     out_dir = tmp_path / "out"
     cfg = JobConfig(output_dir=str(out_dir), chunk_mode="preset", chunk_size_s=1)
     events = []
@@ -327,7 +289,7 @@ def test_pause_then_immediate_resume_never_pauses(tmp_path):
 
 def test_cancel_during_pause_finalize_ends_cancelled(tmp_path):
     """cancel arriving after _process_file returns 'paused' -> finalize CANCELLED."""
-    src = _write_wav(tmp_path / "cf.wav", 2.5)
+    src = make_wav(tmp_path / "cf.wav", 2.5)
     out_dir = tmp_path / "out"
     cfg = JobConfig(output_dir=str(out_dir), chunk_mode="preset", chunk_size_s=1)
     backend = FakeBackend()
@@ -362,7 +324,7 @@ def test_non_48k_input_resampled_back(tmp_path):
     import soundfile as sf
 
     sr_in = 16000
-    src = _write_wav(tmp_path / "s16.wav", 1.5, sr=sr_in)
+    src = make_wav(tmp_path / "s16.wav", 1.5, sr=sr_in)
     out_dir = tmp_path / "out"
     cfg = JobConfig(output_dir=str(out_dir), chunk_mode="preset", chunk_size_s=1)
     backend = FakeBackend()
@@ -386,7 +348,7 @@ def test_non_48k_input_resampled_back(tmp_path):
 
 def test_suffix_disabled_keeps_original_name(tmp_path):
     """suffix_enabled=False -> y.wav first run, y-2.wav on collision."""
-    src = _write_wav(tmp_path / "y.wav", 0.5)
+    src = make_wav(tmp_path / "y.wav", 0.5)
     out_dir = tmp_path / "out"
     cfg = JobConfig(output_dir=str(out_dir), suffix_enabled=False)
     queue = JobQueue(FakeBackend(), EventBus())
@@ -406,7 +368,7 @@ def test_suffix_disabled_keeps_original_name(tmp_path):
 
 def test_move_up_reorders_pending_jobs(tmp_path):
     """move_up pulls a pending job one position earlier in queue order (Task 11)."""
-    files = [_write_wav(tmp_path / f"{name}.wav", 0.1) for name in ("a", "b")]
+    files = [make_wav(tmp_path / f"{name}.wav", 0.1) for name in ("a", "b")]
     cfg = JobConfig(output_dir=str(tmp_path / "out"))
     queue = JobQueue(FakeBackend(), EventBus())
 
