@@ -328,7 +328,7 @@ class Job:
     error: str | None = None          # job-level message when state == FAILED
 
 def build_output_path(src: Path, cfg: JobConfig) -> Path   # cfg.output_dir / "<stem>-deep-filtered-<n>.<fmt>"
-def supported_formats() -> list[str]                       # ["wav", "flac"] + ["mp3"] iff ta.save probe succeeds
+def supported_formats() -> list[str]                       # real-writer probe: ["wav"] + flac/mp3 iff df.io.save_audio round-trip succeeds (R13; env-dependent)
 
 class JobQueue:
     def __init__(self, backend: EnhancementBackend, bus: EventBus) -> None
@@ -360,7 +360,7 @@ def test_progress_events_published(tmp_path):               # bus captures "job_
 
 - [ ] **Step 3: Implement `gui/core/jobs.py`**
 
-Worker loop (single thread, `threading.Event` for wakeups): take first `QUEUED` job (FIFO), for each remaining file (track per-job cursor `file_index`, `chunk_index` so pause/resume continues): lazy `load_audio(str(path), sr=ModelParams().sr)` -> `audio, info = ...`; `orig_sr = info.sample_rate`; plan chunks on `audio.numpy()`; per chunk check `pause_event`/`cancel_event` first (if set: persist cursor, mark `PAUSED` or `CANCELLED` and stop); call `backend.enhance_chunk`; publish `job_progress`. After all chunks: `np.concatenate` -> `resample(out, df_sr, orig_sr)` -> `save_audio(str(build_output_path(...)), out, sr=orig_sr)`. Per-file exceptions: `RuntimeError` with "out of memory" in message -> hint `"Reduce chunk size or switch device to CPU"`; any other -> raw message; mark file failed, continue next file. Job final state: `DONE` if every file done, else `FAILED` with `error="1 of 2 files failed"`. `supported_formats()` probes `torchaudio.save` of a 1-frame wav/flac/mp3 to a `tempfile` in try/except. `submit()` raises `ValueError` if `cfg.output_format not in supported_formats()`. Publish `job_state` events on every transition. All `df`/`torch` imports lazy inside the worker function.
+Worker loop (single thread, `threading.Event` for wakeups): take first `QUEUED` job (FIFO), for each remaining file (track per-job cursor `file_index`, `chunk_index` so pause/resume continues): lazy `load_audio(str(path), sr=ModelParams().sr)` -> `audio, info = ...`; `orig_sr = info.sample_rate`; plan chunks on `audio.numpy()`; per chunk check `pause_event`/`cancel_event` first (if set: persist cursor, mark `PAUSED` or `CANCELLED` and stop); call `backend.enhance_chunk`; publish `job_progress`. After all chunks: `np.concatenate` -> `resample(out, df_sr, orig_sr)` -> `save_audio(str(build_output_path(...)), out, sr=orig_sr)`. Per-file exceptions: `RuntimeError` with "out of memory" in message -> hint `"Reduce chunk size or switch device to CPU"`; any other -> raw message; mark file failed, continue next file. Job final state: `DONE` if every file done, else `FAILED` with `error="1 of 2 files failed"`. `supported_formats()` probes `df.io.save_audio` of a 1-frame wav/flac/mp3 to a `tempfile` in try/except (real-writer probe per R13; result cached module-level). `submit()` raises `ValueError` if `cfg.output_format not in supported_formats()`. Publish `job_state` events on every transition. All `df`/`torch` imports lazy inside the worker function.
 
 - [ ] **Step 4: Run tests + lint + commit.**
 
