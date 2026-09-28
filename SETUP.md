@@ -143,6 +143,17 @@ collected as hidden imports.
 
 ## Known Limitations
 
+- **CI Windows leg uses a CPU-only dependency set.** `requirements.txt` is a
+  pip freeze from a Linux machine: its `nvidia-nccl-cu13`, `nvidia-nvshmem-cu13`
+  and `triton` pins have no `win_amd64` wheels, so `pip install -r
+  requirements.txt` on `windows-latest` fails during dependency resolution.
+  The Windows job therefore installs `torch`/`torchaudio` from the CPU wheel
+  index (`https://download.pytorch.org/whl/cpu`) together with `soundfile`,
+  `loguru`, `deepfilterlib`, `pytest` and `pyinstaller` (plus
+  `requirements-gui.txt`, whose `flet` and `platformdirs` pins are
+  Windows-safe), and runs the tests with `PYTHONPATH=DeepFilterNet`. The
+  Linux job keeps installing `requirements.txt` unchanged; both legs run the
+  same test command and the same `flet pack` build.
 - **Packaged `--selftest` fails (exit 1).** Two independent causes, both
   outside the packaging configuration:
   1. With `torch` excluded, startup treats the environment as incomplete
@@ -161,10 +172,23 @@ collected as hidden imports.
 
 `.github/workflows/build-gui.yml` runs on version tags (`v*`) and on
 manual dispatch. It builds on `ubuntu-latest` and `windows-latest` with
-Python 3.11: installs `requirements.txt` plus `requirements-gui.txt` (and
-`pytest`, `pyinstaller`), runs `python -m pytest tests/gui -m "not e2e"`
-(CPU only, no model download), packages with the `flet pack` command above
-and uploads `dist/` as a build artifact.
+Python 3.11, runs `python -m pytest tests/gui -m "not e2e"` (CPU only, no
+model download) on both legs, packages with the `flet pack` command above
+and uploads `dist/` as a build artifact. Dependency installs are OS-gated
+because the two legs use different torch stacks:
+
+- **Linux:** `pip install -r requirements.txt -r requirements-gui.txt`
+  (plus `pytest`, `pyinstaller`) - the pinned environment used for local
+  development, installed verbatim.
+- **Windows:** `requirements.txt` cannot be installed there (it is a Linux
+  pip freeze whose `nvidia-nccl-cu13`, `nvidia-nvshmem-cu13` and `triton`
+  pins have no `win_amd64` wheels), so the leg installs a CPU-only stack
+  instead: `torch`/`torchaudio` from `https://download.pytorch.org/whl/cpu`,
+  `-r requirements-gui.txt`, plus `soundfile`, `loguru`, `deepfilterlib`
+  (provides the `libdf` extension), `pytest` and `pyinstaller`. Its test
+  step sets `PYTHONPATH=DeepFilterNet` so tests run against the checked-out
+  `df` sources, since `DeepFilterNet` itself is not pip-installed on that
+  leg.
 
 ---
 

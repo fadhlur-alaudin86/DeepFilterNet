@@ -29,13 +29,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg libglib2.0-0 libgl1
 
-      - name: Install Python dependencies
+      - name: Install Python dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-gui.txt
           python -m pip install pytest pyinstaller
 
-      - name: Run GUI tests (CPU, no model download)
+      # The Linux freeze pins CUDA-only packages (nvidia-nccl-cu13,
+      # nvidia-nvshmem-cu13, triton) that have no win_amd64 wheels, so the
+      # Windows leg uses a CPU-only stack instead (see SETUP.md).
+      - name: Install Python dependencies (Windows, CPU-only)
+        if: runner.os == 'Windows'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements-gui.txt
+          python -m pip install soundfile loguru deepfilterlib pytest pyinstaller
+
+      - name: Run GUI tests (Linux, CPU, no model download)
+        if: runner.os == 'Linux'
+        run: python -m pytest tests/gui -m "not e2e"
+
+      - name: Run GUI tests (Windows, CPU, no model download)
+        if: runner.os == 'Windows'
+        env:
+          # df is not installed on the Windows leg; run against the checked-out
+          # DeepFilterNet sources (patched df/io.py) like the local dev setup.
+          PYTHONPATH: DeepFilterNet
         run: python -m pytest tests/gui -m "not e2e"
 
       - name: Build packaged executable
