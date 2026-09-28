@@ -1,0 +1,278 @@
+"""Job queue and output pipeline tests for DeepFilterNet GUI."""
+
+import time
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from gui.core import jobs as jobs_module
+from gui.core.backend import EnhancementBackend, JobConfig
+from gui.core.events import EventBus
+from gui.core.jobs import JobQueue, JobState
+
+SR = 48000
+
+
+class FakeBackend(EnhancementBackend):
+    """Enhancement backend stand-in: audio * 0.5, records call shapes, armable OOM."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []  # input chunk shapes, one per enhance_chunk call
+        self.oom_on_call: int | None = None  # 1-based call number that raises
+        self.on_call = None  # optional hook: fn(call_number)
+        self.shutdown_called = False
+
+    def enhance_chunk(self, audio: np.ndarray, cfg: JobConfig) -> np.ndarray:
+        n = len(self.calls) + 1
+        self.calls.append(tuple(audio.shape))
+        if self.on_call is not None:
+            self.on_call(n)
+        if self.oom_on_call == n:
+            raise RuntimeError("CUDA out of memory")
+        return audio * 0.5
+
+    def cancel(self) -> None:
+        pass
+
+    def shutdown(self) -> None:
+        self.shutdown_called = True
+
+
+def _write_wav(path: Path, seconds: float = 0.5) -> Path:
+    """Write a tiny stereo 48 kHz wav into tmp_path using df.io.save_audio."""
+    from df.io import save_audio
+
+    n = int(seconds * SR)
+    t = np.linspace(0, seconds, n, endpoint=False, dtype=np.float64)
+    audio = np.stack([np.sin(2 * np.pi * 440 * t), np.sin(2 * np.pi * 660 * t)])
+    save_audio(str(path), audio.astype(np.float32), sr=SR)
+    return path
+
+
+def _wait_for(predicate, timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+def test_submit_completes_and_writes_output(tmp_path):
+    """0.5s wav -> DONE, output exists, name == x-deep-filtered.wav."""
+    src = _write_wav(tmp_path / "x.wav", 0.5)
+    out_dir = tmp_path / "out"
+    cfg = JobConfig(output_dir=str(out_dir))
+    backend = FakeBackend()
+    queue = JobQueue(backend, EventBus())
+    queue.start()
+
+    job = queue.submit([src], cfg)
+    assert queue.wait_idle(30.0), "queue should go idle after submit"
+    queue.shutdown()
+
+    assert job.state == JobState.DONE, f"expected DONE, got {job.state}"
+    assert (out_dir / "x-deep-filtered.wav").exists(), "output file missing"
+    names = [p.name for p in out_dir.iterdir()]
+    assert names == ["x-deep-filtered.wav"], f"unexpected output names: {names}"
+    assert job.file_results[str(src)] == "done", f"file result: {job.file_results}"
+    assert job.progress == 1.0, f"expected progress 1.0, got {job.progress}"
+    assert backend.shutdown_called, "shutdown must reach the backend"
+
+
+def test_output_collision_gets_numeric_suffix(tmp_path):
+    """Run twice -> second file named x-deep-filtered-2.wav."""
+    src = _write_wav(tmp_path / "x.wav", 0.5)
+    out_dir = tmp_path / "out"
+    cfg = JobConfig(output_dir=str(out_dir))
+    queue = JobQueue(FakeBackend(), EventBus())
+    queue.start()
+
+    job1 = queue.submit([src], cfg)
+    assert queue.wait_idle(30.0), "first job should finish"
+    job2 = queue.submit([src], cfg)
+    assert queue.wait_idle(30.0), "second job should finish"
+    queue.shutdown()
+
+    assert job1.state == JobState.DONE, f"job1 state: {job1.state}"
+    assert job2.state == JobState.DONE, f"job2 state: {job2.state}"
+    names = sorted(p.name for p in out_dir.iterdir())
+    assert names == [
+        "x-deep-filtered-2.wav",
+        "x-deep-filtered.wav",
+    ], f"unexpected output names: {names}"
+
+
+def test_full_file_output_length_matches_input(tmp_path):
+    """2.5s file, chunk 1s -> output frames == input frames."""
+    import soundfile as sf
+
+    src = _write_wav(tmp_path / "long.wav", 2.5)
+    out_dir = tmp_path / "out"
+    cfg = JobConfig(output_dir=str(out_dir), chunk_mode="preset", chunk_size_s=1)
+    backend = FakeBackend()
+    queue = JobQueue(backend, EventBus())
+    queue.start()
+
+    job = queue.submit([src], cfg)
+    assert queue.wait_idle(30.0), "queue should go idle"
+    queue.shutdown()
+
+    assert job.state == JobState.DONE, f"expected DONE, got {job.state}"
+    assert len(backend.calls) == 3, f"expected 3 chunks, got {len(backend.calls)}"
+    out_file = out_dir / "long-deep-filtered.wav"
+    assert out_file.exists(), "output file missing"
+    in_frames = sf.info(str(src)).frames
+    out_frames = sf.info(str(out_file)).frames
+    assert out_frames == in_frames, f"frames {out_frames} != input {in_frames}"
+
+
+def test_pause_resumes_at_next_chunk(tmp_path):
+    """FakeBackend counts calls; pause during chunk 2 -> after resume total calls == n_chunks."""
+    src = _write_wav(tmp_path / "p.wav", 2.5)
+    out_dir = tmp_path / "out"
+    cfg = JobConfig(output_dir=str(out_dir), chunk_mode="preset", chunk_size_s=1)
+    backend = FakeBackend()
+    queue = JobQueue(backend, EventBus())
+
+    job = queue.submit([src], cfg)  # queued before the worker starts
+    backend.on_call = lambda n: queue.pause(job.id) if n == 2 else None
+    queue.start()
+
+    assert _wait_for(lambda: job.state == JobState.PAUSED), f"state: {job.state}"
+    assert len(backend.calls) == 2, f"expected pause before chunk 3, calls={len(backend.calls)}"
+
+    queue.resume(job.id)
+    assert queue.wait_idle(30.0), "queue should go idle after resume"
+    queue.shutdown()
+
+    assert job.state == JobState.DONE, f"expected DONE, got {job.state}"
+    assert (
+        len(backend.calls) == 3
+    ), f"expected n_chunks==3 calls with no chunk repeat, got {len(backend.calls)}"
+    assert (out_dir / "p-deep-filtered.wav").exists(), "output file missing"
+
+
+def test_cancel_discards_partial_output(tmp_path):
+    """cancel mid-file -> state CANCELLED, no output file on disk."""
+    src = _write_wav(tmp_path / "c.wav", 2.5)
+    out_dir = tmp_path / "out"
+    cfg = JobConfig(output_dir=str(out_dir), chunk_mode="preset", chunk_size_s=1)
+    backend = FakeBackend()
+    queue = JobQueue(backend, EventBus())
+
+    job = queue.submit([src], cfg)
+    backend.on_call = lambda n: queue.cancel(job.id) if n == 2 else None
+    queue.start()
+
+    assert _wait_for(lambda: job.state == JobState.CANCELLED), f"state: {job.state}"
+    queue.shutdown()
+
+    assert job.state == JobState.CANCELLED, f"expected CANCELLED, got {job.state}"
+    assert job.file_results[str(src)] == "cancelled", f"results: {job.file_results}"
+    assert not out_dir.exists() or not any(
+        out_dir.iterdir()
+    ), f"partial output must be discarded, found: {list(out_dir.glob('*'))}"
+
+
+def test_failed_file_does_not_block_others(tmp_path):
+    """[good.wav, bad.txt] -> job FAILED, good.wav result 'done', bad.txt starts with 'failed:'."""
+    good = _write_wav(tmp_path / "good.wav", 0.5)
+    bad = tmp_path / "bad.txt"
+    bad.write_text("this is not audio")
+    out_dir = tmp_path / "out"
+    cfg = JobConfig(output_dir=str(out_dir))
+    queue = JobQueue(FakeBackend(), EventBus())
+    queue.start()
+
+    job = queue.submit([good, bad], cfg)
+    assert queue.wait_idle(30.0), "queue should go idle"
+    queue.shutdown()
+
+    assert job.state == JobState.FAILED, f"expected FAILED, got {job.state}"
+    assert job.error == "1 of 2 files failed", f"job error: {job.error!r}"
+    assert job.file_results[str(good)] == "done", f"results: {job.file_results}"
+    assert job.file_results[str(bad)].startswith("failed:"), f"results: {job.file_results}"
+    assert (out_dir / "good-deep-filtered.wav").exists(), "good.wav output missing"
+
+
+def test_oom_error_includes_actionable_hint(tmp_path):
+    """armed OOM -> file_results msg contains 'chunk' and 'CPU'."""
+    src = _write_wav(tmp_path / "o.wav", 0.5)
+    backend = FakeBackend()
+    backend.oom_on_call = 1
+    queue = JobQueue(backend, EventBus())
+    queue.start()
+
+    job = queue.submit([src], JobConfig(output_dir=str(tmp_path / "out")))
+    assert queue.wait_idle(30.0), "queue should go idle"
+    queue.shutdown()
+
+    assert job.state == JobState.FAILED, f"expected FAILED, got {job.state}"
+    msg = job.file_results[str(src)]
+    assert msg.startswith("failed:"), f"unexpected file result: {msg!r}"
+    assert "chunk" in msg, f"hint must mention 'chunk': {msg!r}"
+    assert "CPU" in msg, f"hint must mention 'CPU': {msg!r}"
+
+
+def test_unsupported_format_rejected_at_submit(tmp_path, monkeypatch):
+    """submit(['x.wav'], output_format='mp3') without mp3 in supported_formats -> ValueError first."""
+    src = _write_wav(tmp_path / "x.wav", 0.5)
+    monkeypatch.setattr(jobs_module, "supported_formats", lambda: ["wav", "flac"])
+    backend = FakeBackend()
+    queue = JobQueue(backend, EventBus())
+
+    with pytest.raises(ValueError):
+        queue.submit([src], JobConfig(output_dir=str(tmp_path / "out"), output_format="mp3"))
+    queue.shutdown()
+
+    assert backend.calls == [], f"backend must not be touched, got {len(backend.calls)} calls"
+
+
+def test_progress_events_published(tmp_path):
+    """bus captures job_progress events with monotonically nondecreasing payload['progress']."""
+    src = _write_wav(tmp_path / "g.wav", 2.5)
+    events = []
+    bus = EventBus()
+    bus.subscribe(events.append)
+    queue = JobQueue(FakeBackend(), bus)
+    queue.start()
+
+    job = queue.submit([src], JobConfig(output_dir=str(tmp_path / "out")))
+    assert queue.wait_idle(30.0), "queue should go idle"
+    queue.shutdown()
+
+    assert job.state == JobState.DONE, f"expected DONE, got {job.state}"
+    progress = [e.payload["progress"] for e in events if e.type == "job_progress"]
+    assert progress, "expected job_progress events"
+    assert all(
+        b >= a for a, b in zip(progress, progress[1:])
+    ), f"progress must be monotonic nondecreasing: {progress}"
+    assert progress[-1] == 1.0, f"final progress must be 1.0, got {progress[-1]}"
+
+
+def test_move_up_down_reorders_pending_jobs(tmp_path):
+    """move_up/move_down swap adjacent queued jobs; edge moves are no-ops."""
+    files = [_write_wav(tmp_path / f"{name}.wav", 0.1) for name in ("a", "b", "c")]
+    cfg = JobConfig(output_dir=str(tmp_path / "out"))
+    queue = JobQueue(FakeBackend(), EventBus())
+
+    job_a = queue.submit([files[0]], cfg)
+    job_b = queue.submit([files[1]], cfg)
+    job_c = queue.submit([files[2]], cfg)
+    ids = lambda: [j.id for j in queue.jobs]  # noqa: E731
+    assert ids() == [job_a.id, job_b.id, job_c.id], f"initial order: {ids()}"
+
+    queue.move_up(job_c.id)
+    assert ids() == [job_a.id, job_c.id, job_b.id], f"after move_up: {ids()}"
+
+    queue.move_down(job_a.id)
+    assert ids() == [job_c.id, job_a.id, job_b.id], f"after move_down: {ids()}"
+
+    queue.move_up(job_c.id)  # already first -> no-op
+    assert ids() == [job_c.id, job_a.id, job_b.id], f"edge move_up must be a no-op: {ids()}"
+
+    queue.move_down(job_b.id)  # already last -> no-op
+    assert ids() == [job_c.id, job_a.id, job_b.id], f"edge move_down must be a no-op: {ids()}"
+    queue.shutdown()
