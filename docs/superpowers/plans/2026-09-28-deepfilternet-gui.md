@@ -227,7 +227,7 @@ class EnhancementBackend(ABC):
 class InProcessBackend(EnhancementBackend): ...
 ```
 
-- [ ] **Step 1: Write the failing tests** (patch `gui.core.backend.init_df` and `gui.core.backend.enhance` — import them into the module namespace so `monkeypatch.setattr("gui.core.backend.init_df", ...)` works)
+- [ ] **Step 1: Write the failing tests** (patch `df.enhance.init_df` and `df.enhance.enhance` — the source modules via sys.modules, NOT `gui.core.backend.*` per R5: lazy function-level imports re-resolve each call, and `df/__init__.py` re-exports shadow the submodule attribute so dotted-string patching cannot work)
 
 ```python
 def test_first_enhance_initializes_once():      # 2 chunks same cfg -> init_df called 1x, enhance 2x
