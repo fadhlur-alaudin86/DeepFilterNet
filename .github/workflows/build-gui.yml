@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*" # Trigger on version tags: git tag v1.0.0 && git push --tags
+  pull_request: # Exercise both legs on every PR touching the GUI
   workflow_dispatch: # Allow manual trigger from GitHub Actions UI
 
 jobs:
@@ -49,6 +50,12 @@ jobs:
 
       - name: Run GUI tests (Linux, CPU, no model download)
         if: runner.os == 'Linux'
+        env:
+          # requirements.txt installs DeepFilterNet from the pinned git tag;
+          # shadow it with the checked-out sources (patched df/io.py) so both
+          # legs test the same code being merged (PYTHONPATH precedes
+          # site-packages; the compiled deepfilterlib still comes installed).
+          PYTHONPATH: DeepFilterNet
         run: python -m pytest tests/gui -m "not e2e"
 
       - name: Run GUI tests (Windows, CPU, no model download)

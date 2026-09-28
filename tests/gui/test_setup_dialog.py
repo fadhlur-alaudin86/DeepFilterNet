@@ -195,3 +195,15 @@ def test_model_download_status_event(app_subscriber):
     app.bus.publish(AppEvent("job_state", {"job_id": "job-1", "state": "queued", "error": None}))
     pump(app.page.loop)
     assert "Preparing model" in app.status_text.value, app.status_text.value
+
+
+def test_runtime_ready_lifts_degraded(degraded_view):
+    """Repair success (runtime phase=ready) re-enables Enhance, no restart."""
+    app = degraded_view
+    assert app.views[0].enhance_button.disabled is True
+    app.bus.publish(AppEvent("runtime", {"phase": "ready"}))
+    pump(app.page.loop)
+    assert app.degraded is False
+    assert app.views[0].enhance_button.disabled is False
+    assert app.degraded_banner.visible is False
+    assert app.status_text.value == "Ready"

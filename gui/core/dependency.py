@@ -204,7 +204,7 @@ def ensure_runtime(progress: Callable[[str, float], None]) -> RuntimeInfo:
     return RuntimeInfo(mode="venv", python=python)
 
 
-def ensure_gui_process() -> bool:
+def ensure_gui_process(selftest: bool = False) -> bool:
     """Decide where the GUI process should run.
 
     Returns False to continue in-process (current environment already
@@ -212,11 +212,16 @@ def ensure_gui_process() -> bool:
     child ``<runtime python> -m gui --runtime-child`` with PYTHONPATH set
     to ``gui_source_parent()`` (the repository root in source mode, the
     bundled data directory when frozen), and returns True (caller must exit).
+    *selftest* forwards ``--selftest`` to the child so a headless check
+    stays headless after the relaunch instead of opening the GUI.
     """
     if current_env_ready():
         return False
     ensure_runtime(progress=lambda *_: None)
     python = venv_python(runtime_dir() / "venv")
     env = {**os.environ, "PYTHONPATH": str(gui_source_parent())}
-    subprocess.Popen([str(python), "-m", "gui", "--runtime-child"], env=env)
+    args = [str(python), "-m", "gui", "--runtime-child"]
+    if selftest:
+        args.append("--selftest")
+    subprocess.Popen(args, env=env)
     return True

@@ -3,7 +3,7 @@
 DeepFilterNet GUI - PyInstaller spec file (fallback builder).
 
 Primary build command (preferred, see SETUP.md):
-    flet pack gui/main.py --name DeepFilterNet-GUI --pyinstaller-build-args=--exclude-module=torch --pyinstaller-build-args=--exclude-module=tensorflow
+    flet pack gui/main.py --name DeepFilterNet-GUI --pyinstaller-build-args=--exclude-module=torch --pyinstaller-build-args=--exclude-module=tensorflow --add-data=DeepFilterNet:DeepFilterNet --add-data=gui:gui
 
 Fallback build (direct PyInstaller, onedir):
     pyinstaller deepfilter-gui.spec --noconfirm --clean

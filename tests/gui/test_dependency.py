@@ -137,3 +137,18 @@ def test_ensure_gui_process_relaunches_when_not_ready(monkeypatch):
     assert args[0] == str(dep.venv_python(dep.runtime_dir() / "venv"))
     assert args[1:] == ["-m", "gui", "--runtime-child"]
     assert str(dep.REPO_ROOT) in kwargs["env"]["PYTHONPATH"].split(os.pathsep)
+
+
+def test_ensure_gui_process_forwards_selftest(monkeypatch):
+    # selftest=True appends --selftest so the child self-tests (headless)
+    spawned = []
+
+    monkeypatch.setattr(dep, "current_env_ready", lambda: False)
+    monkeypatch.setattr(dep, "ensure_runtime", lambda progress: None)
+    monkeypatch.setattr(
+        dep.subprocess, "Popen", lambda args, **kwargs: spawned.append((list(args), kwargs))
+    )
+
+    assert dep.ensure_gui_process(selftest=True) is True
+    args, kwargs = spawned[0]
+    assert args[1:] == ["-m", "gui", "--runtime-child", "--selftest"]

@@ -130,7 +130,7 @@ def test_setup_logging_formatter_has_timestamps(tmp_path):
             handler.flush()
         line = log_path.read_text(encoding="utf-8").strip().splitlines()[-1]
         assert "timestamp-marker" in line
-        # "%Y-%m-%d %H:%M:%S WARNING df:" — date, time, level, logger name.
+        # "%Y-%m-%d %H:%M:%S WARNING root:" — date, time, level, logger name.
         assert line[:4].isdigit() and "WARNING" in line
     finally:
         for handler in list(root.handlers):

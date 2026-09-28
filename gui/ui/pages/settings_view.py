@@ -161,6 +161,7 @@ class SettingsView:
             self.bus.publish(AppEvent("runtime", {"phase": "error", "error": str(exc)}))
             self.repair_status.value = f"Repair failed: {exc}"
         else:
+            self.bus.publish(AppEvent("runtime", {"phase": "ready", "progress": 1.0}))
             self.repair_status.value = "Runtime repair complete"
         finally:
             self.repair_button.disabled = False

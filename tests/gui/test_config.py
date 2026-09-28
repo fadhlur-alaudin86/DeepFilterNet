@@ -10,12 +10,12 @@ from gui.core.config import DEFAULTS, ConfigStore
 
 def test_roundtrip_preserves_values(tmp_path: Path) -> None:
     """set 3 keys, save, new store load, values equal."""
-    cs = ConfigStore()
+    cs = ConfigStore(tmp_path / "config.json")
     cs.set("model", "DeepFilterNet3")
     cs.set("epoch", "best")
     cs.set("post_filter", True)
     cs.save()
-    cs2 = ConfigStore()
+    cs2 = ConfigStore(tmp_path / "config.json")
     loaded = cs2.load()
     assert loaded["model"] == "DeepFilterNet3"
     assert loaded["epoch"] == "best"

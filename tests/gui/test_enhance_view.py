@@ -181,3 +181,28 @@ def test_no_writable_format_disables_submit(monkeypatch, tmp_path):
     assert view.enhance_all() is False
     assert "No writable audio format available" in view.status_text.value
     assert view.queue.submitted == []
+
+
+def test_option_edit_notifies_callback_for_debounce_save(fake_queue, tmp_path):
+    """An option edit must fire on_options_changed (spec 9 autosave path)."""
+    calls: list = []
+    view = EnhanceView(
+        ConfigStore(tmp_path / "config.json"),
+        fake_queue,
+        EventBus(),
+        on_options_changed=lambda: calls.append(1),
+    )
+    view._on_option_edited(None)
+    assert calls == [1]
+    snapshot = view.options_snapshot()
+    assert snapshot["output_format"] in ("wav", "flac")
+    assert snapshot["log_level"] in ("DEBUG", "INFO", "WARNING", "ERROR")
+
+
+def test_options_snapshot_roundtrips_without_submit(fake_queue, tmp_path):
+    """options_snapshot() persists via persist_settings() identically."""
+    cfg = ConfigStore(tmp_path / "config.json")
+    view = EnhanceView(cfg, fake_queue, EventBus())
+    view.output_dir_field.value = "/tmp/autosave-dir"
+    view.persist_settings()
+    assert ConfigStore(tmp_path / "config.json").get("output_dir") == "/tmp/autosave-dir"

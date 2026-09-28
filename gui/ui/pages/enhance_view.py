@@ -3,11 +3,14 @@
 Layout follows spec 4: file list, output controls + Enhance All, Standard
 options (always visible), Advanced options (collapsed) and per-file/global
 progress with a status line. Control values are read into a ``JobConfig``
-snapshot on submit and persisted to the ``ConfigStore`` on Enhance All.
+snapshot on submit and persisted to the ``ConfigStore`` on Enhance All;
+every option edit also notifies ``on_options_changed`` so the app can
+debounce-persist them (spec 9: save on window close + 1 s after changes).
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import flet as ft
@@ -60,10 +63,19 @@ class EnhanceView:
     The view subscribes to the event bus once, at construction.
     """
 
-    def __init__(self, cfg: ConfigStore, queue: JobQueue, bus: EventBus) -> None:
+    def __init__(
+        self,
+        cfg: ConfigStore,
+        queue: JobQueue,
+        bus: EventBus,
+        on_options_changed: Callable[[], None] | None = None,
+    ) -> None:
         self.cfg = cfg
         self.queue = queue
         self.bus = bus
+        # Fires on every option edit; the app persists the snapshot with
+        # debounce (spec 9). None keeps the view standalone.
+        self._on_options_changed = on_options_changed
         initial = cfg.load()
 
         # Inputs and standard options.
@@ -100,6 +112,7 @@ class EnhanceView:
             label="Model directory",
             value=custom_path,
             visible=bool(custom_path),
+            on_change=self._on_option_edited,
         )
         self.atten_slider = ft.Slider(
             label="{value}",
@@ -107,15 +120,18 @@ class EnhanceView:
             max=60,
             divisions=60,
             value=self._initial_atten(initial.get("atten_lim_db")),
+            on_change=self._on_option_edited,
         )
         self.postfilter_switch = ft.Switch(
             label="Postfilter",
             value=bool(initial.get("post_filter", True)),
+            on_change=self._on_option_edited,
         )
         self.device_dropdown = ft.Dropdown(
             label="Device",
             value=self._initial_choice(str(initial.get("device") or ""), devices, "Auto"),
             options=[ft.DropdownOption(key=device, text=device) for device in devices],
+            on_select=self._on_option_edited,
         )
 
         # Output controls.
@@ -123,16 +139,19 @@ class EnhanceView:
             label="Output directory",
             value=str(initial.get("output_dir") or "./out"),
             expand=True,
+            on_change=self._on_option_edited,
         )
         self.browse_dir_button = ft.FilledButton("Browse...", on_click=self._on_pick_dir)
         self.format_dropdown = ft.Dropdown(
             label="Format",
             value=format_value,
             options=[ft.DropdownOption(key=fmt, text=fmt.upper()) for fmt in formats],
+            on_select=self._on_option_edited,
         )
         self.suffix_switch = ft.Switch(
             label="Suffix -deep-filtered",
             value=bool(initial.get("suffix_enabled", True)),
+            on_change=self._on_option_edited,
         )
 
         # Advanced options (collapsed by default).
@@ -145,10 +164,12 @@ class EnhanceView:
         self.delay_switch = ft.Switch(
             label="Delay compensation",
             value=bool(initial.get("delay_compensation", True)),
+            on_change=self._on_option_edited,
         )
         self.no_df_switch = ft.Switch(
             label="No DF stage",
             value=bool(initial.get("no_df_stage", False)),
+            on_change=self._on_option_edited,
         )
         self.log_level_dropdown = ft.Dropdown(
             label="Log level",
@@ -156,6 +177,7 @@ class EnhanceView:
                 str(initial.get("log_level") or "INFO").upper(), LOG_LEVELS, "INFO"
             ),
             options=[ft.DropdownOption(key=level, text=level) for level in LOG_LEVELS],
+            on_select=self._on_option_edited,
         )
         mode_label = _CHUNK_MODE_LABELS.get(
             str(initial.get("chunk_mode") or "auto").lower(), CHUNK_MODE_AUTO
@@ -356,12 +378,22 @@ class EnhanceView:
 
     def persist_settings(self) -> None:
         """Write current control values to the ConfigStore and save them."""
+        for key, value in self.options_snapshot().items():
+            self.cfg.set(key, value)
+        self.cfg.save()
+
+    def options_snapshot(self) -> dict:
+        """Read persistable control values without touching the ConfigStore.
+
+        Feeds the app-level debounce path (spec 9); never raises on invalid
+        input (falls back to the current default instead).
+        """
         try:
             chunk_size = self._chunk_size_value()
         except ValueError:
             chunk_size = DEFAULT_CHUNK_S
         mode = self.chunk_mode_dropdown.value or CHUNK_MODE_AUTO
-        values: dict = {
+        return {
             "model": self._raw_model(),
             "epoch": (self.epoch_field.value or "best").strip() or "best",
             "post_filter": bool(self.postfilter_switch.value),
@@ -376,9 +408,6 @@ class EnhanceView:
             "suffix_enabled": bool(self.suffix_switch.value),
             "log_level": self.log_level_dropdown.value or "INFO",
         }
-        for key, value in values.items():
-            self.cfg.set(key, value)
-        self.cfg.save()
 
     # ------------------------------------------------------------------ events
 
@@ -447,6 +476,7 @@ class EnhanceView:
         )
         if directory:
             self.output_dir_field.value = directory
+            self._notify_options_changed()
 
     # -------------------------------------------------------- control handlers
 
@@ -456,16 +486,28 @@ class EnhanceView:
     def _on_model_change(self, e: ft.Event) -> None:
         self.custom_model_field.visible = self.model_dropdown.value == CUSTOM_MODEL_LABEL
         self.validate()
+        self._notify_options_changed()
 
     def _on_epoch_change(self, e: ft.Event) -> None:
         self.validate()
+        self._notify_options_changed()
 
     def _on_chunk_mode_change(self, e: ft.Event) -> None:
         self.chunk_size_field.disabled = self.chunk_mode_dropdown.value == CHUNK_MODE_AUTO
         self.validate()
+        self._notify_options_changed()
 
     def _on_chunk_size_change(self, e: ft.Event) -> None:
         self.validate()
+        self._notify_options_changed()
+
+    def _on_option_edited(self, e: ft.Event) -> None:
+        """Generic option edit: hand the snapshot to the app for debounce-save."""
+        self._notify_options_changed()
+
+    def _notify_options_changed(self) -> None:
+        if self._on_options_changed is not None:
+            self._on_options_changed()
 
     # ---------------------------------------------------------------- helpers
 

@@ -99,7 +99,7 @@ class DeepFilterApp:
             jobs_core._FORMATS_CACHE = []
 
         self.views = [
-            EnhanceView(cfg, queue, bus),
+            EnhanceView(cfg, queue, bus, on_options_changed=self._on_enhance_options_changed),
             QueueView(queue, bus),
             LogView(bus, cfg),
             SettingsView(cfg, bus),
@@ -221,6 +221,8 @@ class DeepFilterApp:
             self.runtime.update(event.payload)
             if event.payload.get("phase") == "model_download":
                 self.status_text.value = MODEL_PREPARING_TEXT
+            elif event.payload.get("phase") == "ready":
+                self._lift_degraded()
         self._request_page_update()
 
     def _announce_first_model_download(self, event: AppEvent) -> None:
@@ -274,6 +276,34 @@ class DeepFilterApp:
 
     # ----------------------------------------------------------- persistence
 
+    def _lift_degraded(self) -> None:
+        """Re-enable Enhance after a successful in-app runtime repair.
+
+        The Settings view publishes ``runtime phase=ready`` when
+        ``ensure_runtime`` completes; the app re-probes readiness and lifts
+        the degraded state instead of leaving Enhance disabled until a
+        manual restart. The button stays disabled when no writable audio
+        format exists (independent reason, owned by the Enhance view).
+        """
+        if not self.degraded or not current_env_ready():
+            return
+        self.degraded = False
+        self.runtime_info = RuntimeInfo(mode="ready", python=self.runtime_info.python)
+        self.views[0].enhance_button.disabled = not bool(supported_formats())
+        self.degraded_banner.visible = False
+        self.status_text.value = "Ready"
+
+    def _on_enhance_options_changed(self) -> None:
+        """Debounce-persist Enhance option edits (spec 9).
+
+        The snapshot lands in _pending immediately; the cfg write waits for
+        the 1 s debounce or the window-close flush, so closing without
+        submitting no longer loses the options.
+        """
+        enhance = self.views[0]  # VIEW_KEYS[0] == "enhance"
+        self._pending.update(enhance.options_snapshot())
+        self._schedule_save()
+
     def _on_rail_change(self, e: ft.Event[ft.NavigationRail]) -> None:
         """Handle rail selection and persist the chosen view.
 
@@ -303,6 +333,9 @@ class DeepFilterApp:
         if self._prev_window_on_event is not None:
             self._prev_window_on_event(e)
         if e.type == ft.WindowEventType.CLOSE:
+            # Drain the worker before exit: quitting mid-save would leave a
+            # truncated output file (the worker thread is a daemon).
+            self.queue.shutdown()
             window = self.page.window
             if "window_width" not in self._pending and isinstance(window.width, (int, float)):
                 self._pending["window_width"] = int(window.width)

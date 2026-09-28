@@ -134,3 +134,18 @@ def test_theme_loaded_from_config(page, tmp_path):
     assert page.theme_mode == ft.ThemeMode.DARK
     assert page.theme is not None
     assert page.theme.color_scheme_seed is not None
+
+
+def test_window_close_drains_queue_before_flush(page, tmp_path):
+    """CLOSE must shut the queue down so no partial file survives quit."""
+    import types
+
+    cfg = ConfigStore(tmp_path / "config.json")
+    bus = EventBus()
+    queue = JobQueue(FakeBackend(), bus)
+    app = DeepFilterApp(page, cfg, bus, queue)
+    app.build()
+    shutdowns: list = []
+    queue.shutdown = lambda: shutdowns.append(1)
+    app._on_window_event(types.SimpleNamespace(type=ft.WindowEventType.CLOSE))
+    assert shutdowns == [1]

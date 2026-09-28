@@ -162,10 +162,17 @@ def save_audio(
             audio_np = torch.as_tensor(audio).cpu().numpy()
             if audio_np.ndim == 2:
                 audio_np = audio_np.T
-            # Convert to float32 in [-1, 1] if needed, and write with FLOAT subtype
-            if audio_np.dtype != np.float32:
-                audio_np = audio_np.astype(np.float32)
-            sf.write(outpath, audio_np, sr, subtype="FLOAT")
+            if dtype == torch.int16:
+                if audio_np.dtype == np.int16:
+                    pcm16 = audio_np
+                else:
+                    # Scale float audio in [-1, 1] to PCM_16.
+                    pcm16 = (np.clip(audio_np, -1.0, 1.0) * 32767.0).astype(np.int16)
+                sf.write(outpath, pcm16, sr, subtype="PCM_16")
+            else:
+                if audio_np.dtype != np.float32:
+                    audio_np = audio_np.astype(np.float32)
+                sf.write(outpath, audio_np, sr, subtype="FLOAT")
             return
         except Exception as e:
             logger.warning(f"Soundfile failed to save audio ({e}). Falling back to torchaudio.")

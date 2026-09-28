@@ -194,7 +194,9 @@ def main(argv: list[str] | None = None) -> int:
         # Silent path (--selftest, or the dialog cannot run here because
         # flet/platformdirs/loguru are missing): ensure the managed runtime
         # and relaunch silently; a ready environment never reaches this.
-        if ensure_gui_process():
+        # --selftest is forwarded so the child self-tests instead of
+        # opening the GUI.
+        if ensure_gui_process(selftest=args.selftest):
             return 0  # relaunched in the managed runtime; this process must exit
     if args.selftest:
         run_selftest()  # exits the process with status 0

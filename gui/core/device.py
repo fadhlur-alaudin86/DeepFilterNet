@@ -36,21 +36,19 @@ def apply_device(choice: str) -> None:
 def available_devices() -> list[str]:
     """Return list of available device strings.
 
-    First entry is always "Auto". Lazily imports torch;
-    if torch is available and CUDA is available, appends
-    "CUDA:0" through "CUDA:<count-1>".
-    Otherwise appends "CPU".
+    First entry is always "Auto"; "CPU" is always present after any CUDA
+    entries (the OOM guidance tells users to switch to CPU, so it must be
+    selectable even on CUDA machines). Lazily imports torch; without torch
+    or CUDA the list is ["Auto", "CPU"].
     """
     result = ["Auto"]
     try:
         import torch
 
         if torch.cuda.is_available():
-            count = torch.cuda.device_count()
-            for i in range(count):
+            for i in range(torch.cuda.device_count()):
                 result.append(f"CUDA:{i}")
-        else:
-            result.append("CPU")
     except ImportError:
-        result.append("CPU")
+        pass
+    result.append("CPU")
     return result

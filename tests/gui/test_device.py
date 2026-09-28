@@ -57,3 +57,27 @@ def test_available_devices_without_torch(monkeypatch):
     )
     result = available_devices()
     assert result == ["Auto", "CPU"]
+
+
+def test_available_devices_keeps_cpu_when_cuda_present(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        type(
+            "Mod",
+            (),
+            {
+                "cuda": type(
+                    "Mod",
+                    (),
+                    {
+                        "is_available": lambda self: True,
+                        "device_count": lambda self: 2,
+                    },
+                )()
+            },
+        ),
+    )
+    assert available_devices() == ["Auto", "CUDA:0", "CUDA:1", "CPU"]
