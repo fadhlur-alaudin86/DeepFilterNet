@@ -402,3 +402,20 @@ def test_suffix_disabled_keeps_original_name(tmp_path):
     assert job2.state == JobState.DONE, f"job2 state: {job2.state}"
     names = sorted(p.name for p in out_dir.iterdir())
     assert names == ["y-2.wav", "y.wav"], f"unexpected output names: {names}"
+
+
+def test_move_up_reorders_pending_jobs(tmp_path):
+    """move_up pulls a pending job one position earlier in queue order (Task 11)."""
+    files = [_write_wav(tmp_path / f"{name}.wav", 0.1) for name in ("a", "b")]
+    cfg = JobConfig(output_dir=str(tmp_path / "out"))
+    queue = JobQueue(FakeBackend(), EventBus())
+
+    job_a = queue.submit([files[0]], cfg)
+    job_b = queue.submit([files[1]], cfg)
+    queue.move_up(job_b.id)
+
+    assert [job.id for job in queue.jobs] == [
+        job_b.id,
+        job_a.id,
+    ], f"move_up must reorder pending jobs: {[job.id for job in queue.jobs]}"
+    queue.shutdown()
