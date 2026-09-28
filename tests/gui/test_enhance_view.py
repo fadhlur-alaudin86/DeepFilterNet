@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import flet as ft
 import pytest
 
@@ -26,6 +28,26 @@ class FakeQueue:
     def submit(self, files, cfg):
         self.submitted.append((list(files), cfg))
         return object()
+
+
+class FakeFilePickerFile:
+    """Duck-typed flet.FilePickerFile: pick_files() returns objects with .path."""
+
+    def __init__(self, path):
+        self.path = path
+
+
+class FakeFilePicker:
+    """FilePicker stand-in: pick_files() returns queued results, None on cancel."""
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.calls = 0
+
+    async def pick_files(self, allow_multiple=False):
+        result = self._results[self.calls] if self.calls < len(self._results) else None
+        self.calls += 1
+        return result
 
 
 @pytest.fixture
@@ -126,3 +148,36 @@ def test_progress_event_updates_bars(view):
     # File pickers must stay strongly referenced: Flet's post-event service
     # GC unregisters services whose refcount shows no live owner.
     assert set(view._pickers) == {view.file_picker, view.dir_picker}
+
+
+def test_add_files_consumes_pick_files_result(view, tmp_path):
+    # Installed flet 1.0.1: pick_files() returns the selection directly
+    # (on_result is not emitted for API-driven dialogs); None means cancel.
+    picked = FakeFilePicker(
+        [
+            [
+                FakeFilePickerFile(str(tmp_path / "a.wav")),
+                FakeFilePickerFile(str(tmp_path / "b.wav")),
+            ],
+            None,
+        ]
+    )
+    view.file_picker = picked
+    asyncio.run(view._on_add_files(None))
+    assert view.file_list.paths() == [tmp_path / "a.wav", tmp_path / "b.wav"]
+    asyncio.run(view._on_add_files(None))  # cancelled dialog: list unchanged
+    assert view.file_list.paths() == [tmp_path / "a.wav", tmp_path / "b.wav"]
+    assert picked.calls == 2
+
+
+def test_no_writable_format_disables_submit(monkeypatch, tmp_path):
+    monkeypatch.setattr("gui.ui.pages.enhance_view.supported_formats", lambda: [])
+    view = EnhanceView(ConfigStore(tmp_path / "config.json"), FakeQueue(), EventBus())
+    assert view.format_dropdown.options == []
+    assert view.format_dropdown.value is None
+    assert view.enhance_button.disabled is True
+    assert "No writable audio format available" in view.status_text.value
+    view.file_list.add_paths([str(tmp_path / "a.wav")])
+    assert view.enhance_all() is False
+    assert "No writable audio format available" in view.status_text.value
+    assert view.queue.submitted == []

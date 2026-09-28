@@ -44,6 +44,7 @@ DEFAULT_CHUNK_S = 60
 
 CUSTOM_MODEL_LABEL = "Custom path"
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+NO_FORMAT_STATUS = "No writable audio format available"
 
 
 def _clamp(value: float) -> float:
@@ -68,16 +69,24 @@ class EnhanceView:
         # Inputs and standard options.
         self.file_list = FileList()
         # One picker for files, one for directories; Flet 1.0 registers
-        # Service controls with the page at construction time. The extra
-        # tuple reference matters: after every event Flet drops services
-        # whose refcount shows no live owner (session.unregister_services),
-        # so a single attribute is not enough to keep the pickers alive.
-        self.file_picker = ft.FilePicker(on_result=self._on_files_picked)
+        # Service controls with the page at construction time, and both
+        # dialogs return their result to the awaiting call (on_result is not
+        # emitted for API-driven dialogs). The extra tuple reference matters:
+        # after every event Flet drops services whose refcount shows no live
+        # owner (session.unregister_services), so a single attribute is not
+        # enough to keep the pickers alive.
+        self.file_picker = ft.FilePicker()
         self.dir_picker = ft.FilePicker()
         self._pickers = (self.file_picker, self.dir_picker)
 
         devices = available_devices()
-        formats = supported_formats() or ["wav"]
+        # Strict: an empty list means the writer cannot produce any format;
+        # never offer a fallback that submit() would reject anyway.
+        formats = supported_formats()
+        stored_format = str(initial.get("output_format") or "")
+        format_value = (
+            stored_format if stored_format in formats else (formats[0] if formats else None)
+        )
         choices = model_choices()
         model_value = str(initial.get("model") or "")
         custom_path = "" if model_value in choices else model_value
@@ -118,7 +127,7 @@ class EnhanceView:
         self.browse_dir_button = ft.FilledButton("Browse...", on_click=self._on_pick_dir)
         self.format_dropdown = ft.Dropdown(
             label="Format",
-            value=self._initial_choice(str(initial.get("output_format") or ""), formats, "wav"),
+            value=format_value,
             options=[ft.DropdownOption(key=fmt, text=fmt.upper()) for fmt in formats],
         )
         self.suffix_switch = ft.Switch(
@@ -195,6 +204,9 @@ class EnhanceView:
         # Actions.
         self.add_files_button = ft.FilledButton("Add Files...", on_click=self._on_add_files)
         self.enhance_button = ft.FilledButton("Enhance All", on_click=self._on_enhance)
+        if not formats:
+            self.enhance_button.disabled = True
+            self.status_text.value = NO_FORMAT_STATUS
 
         # One subscription per view instance; app.py binds the bus to the page
         # loop, so callbacks run on the loop thread.
@@ -278,7 +290,7 @@ class EnhanceView:
             chunk_mode=_CHUNK_MODE_TO_JOB.get(mode, "auto"),
             chunk_size_s=self._chunk_size_value(),
             output_dir=self._output_dir_value(),
-            output_format=self.format_dropdown.value or "wav",
+            output_format=self.format_dropdown.value or "",
             suffix_enabled=bool(self.suffix_switch.value),
             log_level=self.log_level_dropdown.value or "INFO",
         )
@@ -314,6 +326,9 @@ class EnhanceView:
         Returns False (and updates the status line) when validation fails,
         no files are queued or the queue rejects the job.
         """
+        if not self.format_dropdown.options:
+            self._set_status(NO_FORMAT_STATUS)
+            return False
         if not self.validate():
             self._set_status("Fix the highlighted options before starting")
             return False
@@ -357,7 +372,7 @@ class EnhanceView:
             "chunk_mode": _CHUNK_MODE_TO_CONFIG.get(mode, "auto"),
             "chunk_size_s": chunk_size,
             "output_dir": self._output_dir_value(),
-            "output_format": self.format_dropdown.value or "wav",
+            "output_format": self.format_dropdown.value or "",
             "suffix_enabled": bool(self.suffix_switch.value),
             "log_level": self.log_level_dropdown.value or "INFO",
         }
@@ -417,7 +432,12 @@ class EnhanceView:
     # ------------------------------------------------------- picker callbacks
 
     async def _on_add_files(self, e: ft.Event) -> None:
-        await self.file_picker.pick_files(allow_multiple=True)
+        # pick_files() returns the selection directly (a cancelled dialog
+        # yields no files); on_result is reserved for client-side actions.
+        files = await self.file_picker.pick_files(allow_multiple=True)
+        paths = [file.path for file in (files or []) if file.path]
+        if paths:
+            self.file_list.add_paths(paths)
 
     async def _on_pick_dir(self, e: ft.Event) -> None:
         # Only hint an existing directory: native dialogs reject missing paths.
@@ -427,11 +447,6 @@ class EnhanceView:
         )
         if directory:
             self.output_dir_field.value = directory
-
-    def _on_files_picked(self, e: ft.FilePickerResultEvent) -> None:
-        paths = [file.path for file in (e.files or []) if file.path]
-        if paths:
-            self.file_list.add_paths(paths)
 
     # -------------------------------------------------------- control handlers
 
