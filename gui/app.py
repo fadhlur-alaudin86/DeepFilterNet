@@ -2,22 +2,28 @@
 
 `DeepFilterApp` applies persisted theme/window state to the page, binds the
 `EventBus` to the page's asyncio loop (UI updates only from that loop), and
-composes the root layout: NavigationRail + swappable view container + status
-bar. `main(page)` is the `ft.run` target; it wires the shared services and
-mounts the skeleton. Full view implementations land in Tasks 10-11.
+composes the root layout: optional degraded-runtime banner + NavigationRail
++ swappable view container + status bar. `main(page, runtime)` is the
+`ft.run` target; it wires the shared services and mounts the skeleton. The
+status bar subscribes to "runtime" events (model download) and mirrors job
+events (Task 12).
 """
 
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
 from typing import Any
 
 import flet as ft
 
+from gui.core import jobs as jobs_core
 from gui.core.backend import InProcessBackend
 from gui.core.config import ConfigStore
+from gui.core.dependency import RuntimeInfo, current_env_ready
 from gui.core.events import AppEvent, EventBus
-from gui.core.jobs import JobQueue
+from gui.core.jobs import JobQueue, supported_formats
 from gui.ui.pages import EnhanceView, LogView, QueueView, SettingsView
 
 # Seed for page.theme.color_scheme_seed (Material 3 color generation).
@@ -25,6 +31,12 @@ COLOR_SCHEME_SEED = "#3f51b5"
 
 # Debounce window before persisted UI state hits the ConfigStore (spec 9).
 SAVE_DEBOUNCE_S = 1.0
+
+# Status bar text while the lazily downloaded model is being prepared (spec 7.2).
+MODEL_PREPARING_TEXT = "Preparing model..."
+
+# Banner shown above the views when the user skipped runtime setup (spec 7.2).
+DEGRADED_BANNER_TEXT = "Runtime setup skipped - Enhance is disabled until the runtime is repaired"
 
 # Rail destination keys and labels; order defines the selected-index mapping.
 VIEW_KEYS = ("enhance", "queue", "log", "settings")
@@ -46,11 +58,29 @@ _THEME_MODES = {
 class DeepFilterApp:
     """Root UI: navigation rail, swappable views, status bar, persistence hooks."""
 
-    def __init__(self, page: ft.Page, cfg: ConfigStore, bus: EventBus, queue: JobQueue) -> None:
+    def __init__(
+        self,
+        page: ft.Page,
+        cfg: ConfigStore,
+        bus: EventBus,
+        queue: JobQueue,
+        runtime: RuntimeInfo | None = None,
+    ) -> None:
         self.page = page
         self.cfg = cfg
         self.bus = bus
         self.queue = queue
+
+        # Runtime state from the bootstrap: gui.main passes
+        # RuntimeInfo(mode="degraded") after a setup skip; without an
+        # explicit value readiness is derived from the environment.
+        if runtime is None:
+            mode = "ready" if current_env_ready() else "degraded"
+            runtime = RuntimeInfo(mode=mode, python=Path(sys.executable))
+        self.runtime_info = runtime
+        self.degraded = runtime.mode == "degraded"
+        # Set when the first queued job announced the model download.
+        self._model_prepared = False
 
         # Latest bus payloads, keyed for later views (Task 7 payload keys are
         # merged verbatim: job_state {job_id, state, error},
@@ -58,12 +88,24 @@ class DeepFilterApp:
         self.jobs: dict[str, dict[str, Any]] = {}
         self.runtime: dict[str, Any] = {}
 
+        # Probe output formats before building views: with df/soundfile
+        # absent (setup skipped) the probe raises, which would crash the
+        # enhance view; recording an empty result reuses the existing
+        # "no writable format" state that already disables enhancement.
+        try:
+            supported_formats()
+        except (ImportError, OSError):
+            jobs_core._FORMATS_CACHE = []
+
         self.views = [
             EnhanceView(cfg, queue, bus),
             QueueView(queue, bus),
             LogView(bus),
             SettingsView(cfg, bus),
         ]
+        if self.degraded:
+            # Setup skipped: Enhance stays disabled until repaired (spec 7.2).
+            self.views[0].enhance_button.disabled = True  # VIEW_KEYS[0] == "enhance"
         builders = [view.build for view in self.views]
 
         self._apply_theme()
@@ -107,8 +149,15 @@ class DeepFilterApp:
             content=ft.Row([self.status_text], spacing=8),
             padding=ft.Padding.symmetric(horizontal=12, vertical=6),
         )
+        self.degraded_banner = ft.Container(
+            content=ft.Text(DEGRADED_BANNER_TEXT, size=12),
+            visible=self.degraded,
+            bgcolor=ft.Colors.AMBER_100,
+            padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+        )
         self.root = ft.Column(
             [
+                self.degraded_banner,
                 ft.Row(
                     [self.rail, ft.VerticalDivider(width=1), self.view_container],
                     expand=True,
@@ -164,9 +213,49 @@ class DeepFilterApp:
             job_id = event.payload.get("job_id")
             if job_id is not None:
                 self.jobs.setdefault(job_id, {}).update(event.payload)
+            if event.type == "job_state":
+                self._announce_first_model_download(event)
+            self._update_status(event)
         elif event.type == "runtime":
             self.runtime.update(event.payload)
+            if event.payload.get("phase") == "model_download":
+                self.status_text.value = MODEL_PREPARING_TEXT
         self._request_page_update()
+
+    def _announce_first_model_download(self, event: AppEvent) -> None:
+        """Publish the model-download status once, on the first submit.
+
+        The backend downloads the model lazily on its first use (Task 3);
+        a queued job is the earliest app-visible sign of that first use,
+        so the status bar announces "Preparing model..." before the worker
+        touches the model (emission seam of the runtime publisher, spec 7.2).
+        """
+        if self._model_prepared or event.payload.get("state") != "queued":
+            return
+        self._model_prepared = True
+        self.bus.publish(AppEvent("runtime", {"phase": "model_download"}))
+
+    def _update_status(self, event: AppEvent) -> None:
+        """Mirror job events into the status bar.
+
+        "queued"/"running" are skipped on purpose: the first chunk (and
+        thus the first progress event) lands only after the lazy model
+        download finished, so "Preparing model..." stays visible while
+        the download runs.
+        """
+        if event.type == "job_progress":
+            try:
+                progress = float(event.payload.get("progress") or 0.0)
+            except (TypeError, ValueError):
+                return
+            self.status_text.value = f"Enhancing - {progress * 100:.0f}%"
+            return
+        state = event.payload.get("state")
+        error = event.payload.get("error")
+        if state == "failed":
+            self.status_text.value = f"Failed: {error}" if error else "Failed"
+        elif state in ("done", "cancelled", "paused"):
+            self.status_text.value = str(state).capitalize()
 
     def _request_page_update(self) -> None:
         """Call page.update() on the page loop thread, wherever we were called."""
@@ -244,12 +333,17 @@ class DeepFilterApp:
             self.cfg.set(key, value)
 
 
-def main(page: ft.Page) -> None:
-    """Flet entry point: build services, mount the skeleton (queue not started)."""
+def main(page: ft.Page, runtime: RuntimeInfo | None = None) -> None:
+    """Flet entry point: build services, mount the skeleton (queue not started).
+
+    *runtime* is the bootstrap's RuntimeInfo: gui.main passes
+    RuntimeInfo(mode="degraded") after a setup skip; None derives
+    readiness from the environment.
+    """
     cfg = ConfigStore()
     bus = EventBus()
     queue = JobQueue(InProcessBackend(), bus)
-    app = DeepFilterApp(page, cfg, bus, queue)
+    app = DeepFilterApp(page, cfg, bus, queue, runtime=runtime)
     page.title = "DeepFilterNet"
     page.add(app.build())
     page.update()
