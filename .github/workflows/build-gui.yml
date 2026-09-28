@@ -1,0 +1,53 @@
+name: Build GUI Binaries
+
+on:
+  push:
+    tags:
+      - "v*" # Trigger on version tags: git tag v1.0.0 && git push --tags
+  workflow_dispatch: # Allow manual trigger from GitHub Actions UI
+
+jobs:
+  build:
+    name: Build GUI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libglib2.0-0 libgl1
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-gui.txt
+          python -m pip install pytest pyinstaller
+
+      - name: Run GUI tests (CPU, no model download)
+        run: python -m pytest tests/gui -m "not e2e"
+
+      - name: Build packaged executable
+        shell: bash
+        run: >
+          flet pack gui/main.py --name DeepFilterNet-GUI
+          --pyinstaller-build-args=--exclude-module=torch
+          --pyinstaller-build-args=--exclude-module=tensorflow
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepFilterNet-GUI-${{ matrix.os }}
+          path: dist/
+          if-no-files-found: error

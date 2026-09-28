@@ -1,6 +1,8 @@
 """Chunker tests for DeepFilterNet GUI."""
+
 import numpy as np
-from gui.core.chunker import plan_chunks, concat_chunks, validate_chunk_size
+
+from gui.core.chunker import concat_chunks, plan_chunks, validate_chunk_size
 
 SR = 48000
 
@@ -35,6 +37,7 @@ def test_preset_size_used():
 def test_custom_size_validation():
     # validate_chunk_size(4) and (601) raise ValueError; 5 and 600 pass
     import pytest
+
     with pytest.raises(ValueError):
         validate_chunk_size(4)
     with pytest.raises(ValueError):
