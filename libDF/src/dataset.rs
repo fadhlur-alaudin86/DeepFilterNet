@@ -1462,8 +1462,9 @@ impl fmt::Display for DsType {
         write!(f, "{self:?}")
     }
 }
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub enum Codec {
+    #[default]
     PCM = 0,
     Vorbis = 1,
     FLAC = 2,
@@ -1471,11 +1472,6 @@ pub enum Codec {
 impl Default for &Codec {
     fn default() -> Self {
         &Codec::PCM
-    }
-}
-impl Default for Codec {
-    fn default() -> Self {
-        Codec::PCM
     }
 }
 #[derive(Debug)]
@@ -2081,7 +2077,7 @@ where
 {
     match env::var(var) {
         Ok(e) => {
-            let e = e.parse::<T>().expect("Failed to parse env {var}: {e}");
+            let e = e.parse::<T>().unwrap_or_else(|err| panic!("Failed to parse env {var}: {e}: {err:?}"));
             log::debug!("Running with env '{}={}'", var, e);
             Some(e)
         }
