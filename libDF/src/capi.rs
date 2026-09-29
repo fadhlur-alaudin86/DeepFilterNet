@@ -27,12 +27,10 @@ impl DFState {
         let mut r_params = RuntimeParams::default_with_ch(channels); //channel
         r_params = r_params.with_atten_lim(atten_lim).with_thresholds(
             // Thresholds: min_db, max_db_erb, max_db_df.
-            -15.0f32,
-            35.0f32,
-            35.0f32,
+            -15.0f32, 35.0f32, 35.0f32,
         );
-        r_params = r_params.with_post_filter(0.0f32);  //post_filter_beta
-        r_params = r_params.with_mask_reduce(ReduceMask::MAX);  //reduce_mask
+        r_params = r_params.with_post_filter(0.0f32); //post_filter_beta
+        r_params = r_params.with_mask_reduce(ReduceMask::MAX); //reduce_mask
         let df_params =
             DfParams::new(PathBuf::from(model_path)).expect("Could not load model from path");
         let m =
