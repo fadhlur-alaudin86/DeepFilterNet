@@ -34,7 +34,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r requirements-gui.txt
+          python -m pip install -r requirements-py311.txt -r requirements-gui.txt
           python -m pip install pytest pyinstaller
 
       # The Linux freeze pins CUDA-only packages (nvidia-nccl-cu13,
@@ -51,10 +51,9 @@ jobs:
       - name: Run GUI tests (Linux, CPU, no model download)
         if: runner.os == 'Linux'
         env:
-          # requirements.txt installs DeepFilterNet from the pinned git tag;
-          # shadow it with the checked-out sources (patched df/io.py) so both
-          # legs test the same code being merged (PYTHONPATH precedes
-          # site-packages; the compiled deepfilterlib still comes installed).
+          # requirements-py311.txt has no DeepFilterNet editables, so the
+          # checked-out sources (patched df/io.py) are used directly via
+          # PYTHONPATH; the GUI tests only need the pure-python df package.
           PYTHONPATH: DeepFilterNet
         run: python -m pytest tests/gui -m "not e2e"
 
