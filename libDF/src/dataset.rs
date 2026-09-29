@@ -2077,7 +2077,9 @@ where
 {
     match env::var(var) {
         Ok(e) => {
-            let e = e.parse::<T>().unwrap_or_else(|err| panic!("Failed to parse env {var}: {e}: {err:?}"));
+            let e = e
+                .parse::<T>()
+                .unwrap_or_else(|err| panic!("Failed to parse env {var}: {e}: {err:?}"));
             log::debug!("Running with env '{}={}'", var, e);
             Some(e)
         }

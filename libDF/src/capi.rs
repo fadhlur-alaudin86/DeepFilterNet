@@ -26,9 +26,10 @@ impl DFState {
         };
         let mut r_params = RuntimeParams::default_with_ch(channels); //channel
         r_params = r_params.with_atten_lim(atten_lim).with_thresholds(
-            -15.0f32,  //min_db_thresh
-            35.0f32,   //max_db_erb_thresh
-            35.0f32,   //max_db_df_thresh
+            // Thresholds: min_db, max_db_erb, max_db_df.
+            -15.0f32,
+            35.0f32,
+            35.0f32,
         );
         r_params = r_params.with_post_filter(0.0f32);  //post_filter_beta
         r_params = r_params.with_mask_reduce(ReduceMask::MAX);  //reduce_mask
