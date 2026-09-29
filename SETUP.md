@@ -135,11 +135,12 @@ flet pack gui/main.py --name DeepFilterNet-GUI \
 
 The two `--add-data` flags bundle the `DeepFilterNet/` and `gui/` source
 trees as data, mirroring the `datas` entries in `deepfilter-gui.spec` (keep
-them in sync): the packaged app pip-installs the bundled `DeepFilterNet/`
-into the managed runtime and puts the bundled `gui/` directory on the child
-process `PYTHONPATH`. PyInstaller separates source and destination with
-`os.pathsep`, so on Windows use `;` instead of `:` (`--add-data
-"DeepFilterNet;DeepFilterNet"`).
+them in sync): frozen runs put the bundled `DeepFilterNet/` on the child
+process `PYTHONPATH` (next to the bundled `gui/` directory) and install
+the prebuilt `deepfilterlib` wheel for the compiled extension, instead of
+pip-installing the bundled tree. PyInstaller separates source and
+destination with `os.pathsep`, so on Windows use `;` instead of `:`
+(`--add-data "DeepFilterNet;DeepFilterNet"`).
 
 Output on Linux: `dist/DeepFilterNet-GUI` (single-file executable; the size
 grows with the bundled `DeepFilterNet/` and `gui/` data trees) plus
