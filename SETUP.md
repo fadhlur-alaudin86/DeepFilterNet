@@ -204,15 +204,19 @@ flags above).
   without Python 3.11 or newer on `PATH` cannot complete first-run setup,
   even though the app itself is standalone.
 - **First-run setup and the first enhancement need the network.** Setup
-  pip-installs `torch`, the bundled `DeepFilterNet/` sources and
-  `flet`/`platformdirs` into the managed venv, and the first enhancement
-  downloads the model weights; there is no offline install path.
+  pip-installs `torch`, `flet`/`platformdirs` and the `df` dependency stack
+  into the managed venv (source runs pip-install the `DeepFilterNet/` tree;
+  frozen runs install the prebuilt `deepfilterlib` wheel because the bundled
+  tree cannot be pip-installed — its pyproject references `../pyDF`), and
+  the first enhancement downloads the model weights; there is no offline
+  install path.
 - **The bundle ships its own `DeepFilterNet/` and `gui/` sources.** Both
   trees are bundled as data (`datas` in `deepfilter-gui.spec`, the
-  `--add-data` flags in the `flet pack` command): `package_source()` points
-  the pip install at the bundled `DeepFilterNet/`, and
-  `gui_source_parent()` puts the bundled `gui/` directory on the child
-  process `PYTHONPATH`.
+  `--add-data` flags in the `flet pack` command): frozen runs put the
+  bundled `DeepFilterNet/` on the child process `PYTHONPATH` (next to the
+  bundled `gui/` directory from `gui_source_parent()`), so the child
+  imports the bundled `df` sources with the wheel providing the compiled
+  extension.
 - **Packaged `--selftest` is not re-verified after the bootstrap fixes.**
   It used to fail (exit 1) for two reasons: the frozen process could not
   create a virtualenv (now addressed by resolving an external interpreter

@@ -152,3 +152,47 @@ def test_ensure_gui_process_forwards_selftest(monkeypatch):
     assert dep.ensure_gui_process(selftest=True) is True
     args, kwargs = spawned[0]
     assert args[1:] == ["-m", "gui", "--runtime-child", "--selftest"]
+
+
+def test_ensure_runtime_frozen_installs_wheel_not_tree(monkeypatch, tmp_path):
+    # Frozen: the bundled tree cannot be pip-installed (its pyproject needs
+    # ../pyDF), so the prebuilt deepfilterlib wheel goes in instead.
+    created = []
+    pip_calls = []
+
+    monkeypatch.setattr(dep, "is_frozen", lambda: True)
+    monkeypatch.setattr(dep, "runtime_dir", lambda: tmp_path)
+    monkeypatch.setattr(dep, "_create_venv_frozen", lambda path: created.append(path))
+    monkeypatch.setattr(dep, "detect_cuda_tag", lambda: None)
+    monkeypatch.setattr(
+        dep.subprocess, "run", lambda args, **kwargs: pip_calls.append((list(args), kwargs))
+    )
+
+    dep.ensure_runtime(lambda *_: None)
+
+    assert created == [tmp_path / "venv"]
+    assert len(pip_calls) == 3
+    assert pip_calls[1][0][-1] == "deepfilterlib"
+    tree_path = str(dep.REPO_ROOT / "DeepFilterNet")
+    assert all(tree_path not in cmd for cmd, _ in pip_calls)
+
+
+def test_ensure_gui_process_frozen_pythonpath(tmp_path, monkeypatch):
+    # Frozen: the child imports bundled df sources via PYTHONPATH (both the
+    # DeepFilterNet tree and the gui parent), since df is not pip-installed.
+    spawned = []
+    pkg = tmp_path / "DeepFilterNet"
+    parent = tmp_path / "bundle"
+
+    monkeypatch.setattr(dep, "is_frozen", lambda: True)
+    monkeypatch.setattr(dep, "current_env_ready", lambda: False)
+    monkeypatch.setattr(dep, "ensure_runtime", lambda progress: None)
+    monkeypatch.setattr(dep, "package_source", lambda: pkg)
+    monkeypatch.setattr(dep, "gui_source_parent", lambda: parent)
+    monkeypatch.setattr(
+        dep.subprocess, "Popen", lambda args, **kwargs: spawned.append((list(args), kwargs))
+    )
+
+    assert dep.ensure_gui_process() is True
+    _, kwargs = spawned[0]
+    assert kwargs["env"]["PYTHONPATH"].split(os.pathsep) == [str(pkg), str(parent)]
