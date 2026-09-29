@@ -35,7 +35,6 @@ def normalize(input: str) -> List[str]:
 
 
 def eval_wacc(args):
-    global MODEL, WHISPER_OPT, DT
 
     load_model()
     audio_clips_list = glob.glob(os.path.join(args.testset_dir, "*.wav"))

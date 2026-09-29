@@ -1,3 +1,7 @@
+// See main.rs: upstream demo keeps global audio state in `static mut`;
+// allowed here as well since this file is also the df-demo-c crate root.
+#![allow(static_mut_refs)]
+
 use std::env;
 use std::fmt::Display;
 use std::io::{self, stdout, Write};

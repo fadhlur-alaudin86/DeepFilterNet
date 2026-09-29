@@ -52,7 +52,6 @@ __r_tol = 1e-4
 
 
 def get_ort_session(onnx: str, providers="gpu"):
-    global ORT_SESS
 
     import onnxruntime as ort
 

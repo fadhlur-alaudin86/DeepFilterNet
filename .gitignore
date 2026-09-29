@@ -146,3 +146,6 @@ dmypy.json
 
 # IDE
 .idea
+
+# Git worktrees
+.worktrees/

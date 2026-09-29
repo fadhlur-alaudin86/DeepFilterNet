@@ -1,0 +1,82 @@
+name: Build GUI Binaries
+
+on:
+  push:
+    tags:
+      - "v*" # Trigger on version tags: git tag v1.0.0 && git push --tags
+  pull_request: # Exercise both legs on every PR touching the GUI
+  workflow_dispatch: # Allow manual trigger from GitHub Actions UI
+
+jobs:
+  build:
+    name: Build GUI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libglib2.0-0 libgl1
+
+      - name: Install Python dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-py311.txt -r requirements-gui.txt
+          python -m pip install -e "git+https://github.com/SuperBypassUdinnn/DeepFilterNet@58b3a101deb832a2c3da19b8051956e2bd4a4874#egg=DeepFilterLib&subdirectory=pyDF"
+          python -m pip install pytest pyinstaller
+
+      # The Linux freeze pins CUDA-only packages (nvidia-nccl-cu13,
+      # nvidia-nvshmem-cu13, triton) that have no win_amd64 wheels, so the
+      # Windows leg uses a CPU-only stack instead (see SETUP.md).
+      - name: Install Python dependencies (Windows, CPU-only)
+        if: runner.os == 'Windows'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements-gui.txt
+          python -m pip install soundfile loguru deepfilterlib pytest pyinstaller
+
+      - name: Run GUI tests (Linux, CPU, no model download)
+        if: runner.os == 'Linux'
+        env:
+          # requirements-py311.txt has no DeepFilterNet editables; the
+          # checked-out sources (patched df/io.py) are used via PYTHONPATH
+          # while the compiled libdf extension comes from the editable
+          # DeepFilterLib install above (df imports it transitively).
+          PYTHONPATH: DeepFilterNet
+        run: python -m pytest tests/gui -m "not e2e"
+
+      - name: Run GUI tests (Windows, CPU, no model download)
+        if: runner.os == 'Windows'
+        env:
+          # df is not installed on the Windows leg; run against the checked-out
+          # DeepFilterNet sources (patched df/io.py) like the local dev setup.
+          PYTHONPATH: DeepFilterNet
+        run: python -m pytest tests/gui -m "not e2e"
+
+      - name: Build packaged executable
+        shell: bash
+        run: >
+          flet pack gui/main.py --name DeepFilterNet-GUI
+          --pyinstaller-build-args=--exclude-module=torch
+          --pyinstaller-build-args=--exclude-module=tensorflow
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepFilterNet-GUI-${{ matrix.os }}
+          path: dist/
+          if-no-files-found: error

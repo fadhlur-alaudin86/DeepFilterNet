@@ -1,36 +1,70 @@
 import os
+from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, Union
 
+import numpy as np
 import torch
 import torchaudio as ta
 from loguru import logger
 from numpy import ndarray
 from torch import Tensor
 
+from df.logger import warn_once
+from df.utils import download_file, get_cache_dir, get_git_root
+
+# --- soundfile import (independent of AudioMetaData chain) ---
+try:
+    import soundfile as sf
+except ImportError:
+    sf = None
+
+# --- AudioMetaData import chain and resample constants ---
+# Three-tier import for AudioMetaData, with constants determined by the tier.
+
+# Tier 1: Try new torchaudio where AudioMetaData is at top level
 try:
     from torchaudio import AudioMetaData
 
-    TA_RESAMPLE_SINC = "sinc_interp_hann"
-    TA_RESAMPLE_KAISER = "sinc_interp_kaiser"
+    # Modern torchaudio >= 2.9 uses these sinc constants
+    SINC = "sinc_interp_hann"
+    KAISER = "sinc_interp_kaiser"
+
+# Tier 2: Try legacy torchaudio where AudioMetaData is under backend.common
 except ImportError:
-    from torchaudio.backend.common import AudioMetaData
+    try:
+        from torchaudio.backend.common import AudioMetaData  # type: ignore
 
-    TA_RESAMPLE_SINC = "sinc_interpolation"
-    TA_RESAMPLE_KAISER = "kaiser_window"
+        # Legacy torchaudio < 2.9 uses these constants
+        SINC = "sinc_interpolation"
+        KAISER = "kaiser_window"
 
-from df.logger import warn_once
-from df.utils import download_file, get_cache_dir, get_git_root
+    # Tier 3: Define minimal AudioMetaData dataclass fallback
+    # This tier is reached when neither import works (e.g., torchaudio 2.11+)
+    # removed both the top-level and backend.common AudioMetaData
+    except ImportError:
+
+        @dataclass
+        class AudioMetaData:  # type: ignore
+            sample_rate: int
+            num_frames: int = 0
+            num_channels: int = 0
+            bits_per_sample: int = 0
+            encoding: str = ""
+
+        # torchaudio 2.11 uses modern constants; keep them consistent
+        SINC = "sinc_interp_hann"
+        KAISER = "sinc_interp_kaiser"
 
 
 def load_audio(
     file: str, sr: Optional[int] = None, verbose=True, **kwargs
 ) -> Tuple[Tensor, AudioMetaData]:
-    """Loads an audio file using torchaudio.
+    """Loads an audio file using soundfile (preferred) or torchaudio (fallback).
 
     Args:
         file (str): Path to an audio file.
         sr (int): Optionally resample audio to specified target sampling rate.
-        **kwargs: Passed to torchaudio.load(). Depends on the backend. The resample method
+        **kwargs: Passed to the underlying loader. The resample method
             may be set via `method` which is passed to `resample()`.
 
     Returns:
@@ -43,7 +77,54 @@ def load_audio(
     rkwargs = {}
     if "method" in kwargs:
         rkwargs["method"] = kwargs.pop("method")
-    info: AudioMetaData = ta.info(file, **ikwargs)
+
+    # Prefer soundfile: supports more formats and is independent of torchaudio backend changes
+    if sf is not None:
+        try:
+            info_sf = sf.info(file)
+            orig_sr = info_sf.samplerate
+            info = AudioMetaData(
+                sample_rate=orig_sr,
+                num_frames=info_sf.frames,
+                num_channels=info_sf.channels,
+            )
+
+            num_frames = kwargs.get("num_frames", -1)
+            frame_offset = kwargs.get("frame_offset", 0)
+            if "num_frames" in kwargs and sr is not None:
+                num_frames = num_frames * orig_sr // sr
+
+            data, orig_sr = sf.read(file, start=frame_offset, frames=num_frames, dtype="float32")
+            audio = torch.from_numpy(data)
+            if audio.ndim == 1:
+                audio = audio.unsqueeze(0)
+            else:
+                audio = audio.t()
+
+            if sr is not None and orig_sr != sr:
+                if verbose:
+                    warn_once(
+                        f"Audio sampling rate does not match model sampling rate ({orig_sr}, {sr}). "
+                        "Resampling..."
+                    )
+                audio = resample(audio, orig_sr, sr, **rkwargs)
+            return audio.contiguous(), info
+        except Exception as e:
+            if verbose:
+                logger.warning(f"Soundfile failed to load audio ({e}). Falling back to torchaudio.")
+
+    # Fallback to torchaudio if soundfile is unavailable or failed
+    try:
+        info = ta.info(file, **ikwargs)
+    except (AttributeError, ImportError):
+        # torchaudio.info may not be available in some builds; load a 1-frame stub to get sr
+        try:
+            temp_audio, orig_sr = ta.load(file, num_frames=1)
+            info = AudioMetaData(sample_rate=orig_sr)
+        except Exception:
+            # Last resort: create minimal metadata
+            info = AudioMetaData(sample_rate=48000)
+
     if "num_frames" in kwargs and sr is not None:
         kwargs["num_frames"] *= info.sample_rate // sr
     audio, orig_sr = ta.load(file, **kwargs)
@@ -74,13 +155,47 @@ def save_audio(
         outpath = os.path.join(output_dir, os.path.basename(outpath))
     if log:
         logger.info(f"Saving audio file '{outpath}'")
+
+    # Prefer soundfile for saving: avoids torchaudio dtype/backend quirks
+    if sf is not None:
+        try:
+            audio_np = torch.as_tensor(audio).cpu().numpy()
+            if audio_np.ndim == 2:
+                audio_np = audio_np.T
+            if dtype == torch.int16:
+                if audio_np.dtype == np.int16:
+                    pcm16 = audio_np
+                else:
+                    # Scale float audio in [-1, 1] to PCM_16.
+                    pcm16 = (np.clip(audio_np, -1.0, 1.0) * 32767.0).astype(np.int16)
+                sf.write(outpath, pcm16, sr, subtype="PCM_16")
+            else:
+                if audio_np.dtype != np.float32:
+                    audio_np = audio_np.astype(np.float32)
+                sf.write(outpath, audio_np, sr, subtype="FLOAT")
+            return
+        except Exception as e:
+            logger.warning(f"Soundfile failed to save audio ({e}). Falling back to torchaudio.")
+
+    # Fallback to torchaudio
     audio = torch.as_tensor(audio)
     if audio.ndim == 1:
         audio.unsqueeze_(0)
-    if dtype == torch.int16 and audio.dtype != torch.int16:
-        audio = (audio * (1 << 15)).to(torch.int16)
-    if dtype == torch.float32 and audio.dtype != torch.float32:
-        audio = audio.to(torch.float32) / (1 << 15)
+
+    # torchaudio.save >= 2.9 (torchcodec backend) only supports float32 in range [-1.0, 1.0]
+    if audio.dtype != torch.float32:
+        if audio.dtype == torch.int16:
+            audio = audio.to(torch.float32) / 32768.0
+        elif audio.dtype == torch.int32:
+            audio = audio.to(torch.float32) / 2147483648.0
+        else:
+            audio = audio.to(torch.float32)
+
+    # Clamp to [-1.0, 1.0] to avoid clipping artifacts
+    max_val = audio.abs().max()
+    if max_val > 1.0:
+        audio = audio / max_val
+
     ta.save(outpath, audio, sr)
 
 
@@ -92,16 +207,16 @@ except ImportError:
 
 def get_resample_params(method: str) -> Dict[str, Any]:
     params = {
-        "sinc_fast": {"resampling_method": TA_RESAMPLE_SINC, "lowpass_filter_width": 16},
-        "sinc_best": {"resampling_method": TA_RESAMPLE_SINC, "lowpass_filter_width": 64},
+        "sinc_fast": {"resampling_method": SINC, "lowpass_filter_width": 16},
+        "sinc_best": {"resampling_method": SINC, "lowpass_filter_width": 64},
         "kaiser_fast": {
-            "resampling_method": TA_RESAMPLE_KAISER,
+            "resampling_method": KAISER,
             "lowpass_filter_width": 16,
             "rolloff": 0.85,
             "beta": 8.555504641634386,
         },
         "kaiser_best": {
-            "resampling_method": TA_RESAMPLE_KAISER,
+            "resampling_method": KAISER,
             "lowpass_filter_width": 16,
             "rolloff": 0.9475937167399596,
             "beta": 14.769656459379492,

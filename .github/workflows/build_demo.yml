@@ -14,12 +14,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-20.04
-            rust: nightly
-          - os: macos-13
-            rust: nightly
+          - os: ubuntu-22.04
+            rust: nightly-2025-01-01
+          - os: macos-14
+            rust: nightly-2025-01-01
           - os: windows-2022
-            rust: nightly
+            rust: nightly-2025-01-01
             ext: .exe
     steps:
       - name: Checkout repository
