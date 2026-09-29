@@ -35,6 +35,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-py311.txt -r requirements-gui.txt
+          python -m pip install -e "git+https://github.com/SuperBypassUdinnn/DeepFilterNet@58b3a101deb832a2c3da19b8051956e2bd4a4874#egg=DeepFilterLib&subdirectory=pyDF"
           python -m pip install pytest pyinstaller
 
       # The Linux freeze pins CUDA-only packages (nvidia-nccl-cu13,
@@ -51,9 +52,10 @@ jobs:
       - name: Run GUI tests (Linux, CPU, no model download)
         if: runner.os == 'Linux'
         env:
-          # requirements-py311.txt has no DeepFilterNet editables, so the
-          # checked-out sources (patched df/io.py) are used directly via
-          # PYTHONPATH; the GUI tests only need the pure-python df package.
+          # requirements-py311.txt has no DeepFilterNet editables; the
+          # checked-out sources (patched df/io.py) are used via PYTHONPATH
+          # while the compiled libdf extension comes from the editable
+          # DeepFilterLib install above (df imports it transitively).
           PYTHONPATH: DeepFilterNet
         run: python -m pytest tests/gui -m "not e2e"
 
