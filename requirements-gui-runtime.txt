@@ -1,3 +1,9 @@
+# Managed-runtime dependency set (human-readable manifest; ensure_runtime
+# installs these via pip, it does not consume this file).
 flet>=1.0,<2.0
 platformdirs
+# Source runs install the ./DeepFilterNet tree. Frozen runs install the
+# prebuilt deepfilterlib wheel instead (the bundled tree cannot be
+# pip-installed: its pyproject references ../pyDF) and serve the bundled
+# df sources via the child PYTHONPATH.
 ./DeepFilterNet

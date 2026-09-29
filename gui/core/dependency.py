@@ -89,11 +89,12 @@ def _bundle_data_root() -> Path:
 
 
 def package_source() -> Path:
-    """Directory holding the DeepFilterNet (``df``) sources for the pip install.
+    """Directory holding the DeepFilterNet (``df``) sources.
 
-    Frozen bundles ship the ``DeepFilterNet/`` tree as data (see
-    ``deepfilter-gui.spec``); source runs install the checkout at
-    ``REPO_ROOT/"DeepFilterNet"``.
+    Source runs pip-install this tree into the managed runtime; frozen
+    bundles ship it as data (see ``deepfilter-gui.spec``) and put it on the
+    child PYTHONPATH instead (it cannot be pip-installed: its pyproject
+    references ``../pyDF``, absent from the bundle).
     """
     if not is_frozen():
         return REPO_ROOT / "DeepFilterNet"
@@ -177,10 +178,13 @@ def ensure_runtime(progress: Callable[[str, float], None]) -> RuntimeInfo:
     (create venv with pip; source runs use stdlib ``venv.create``, frozen
     runs delegate to ``resolve_python() -m venv``), ``"torch"`` (CUDA-aware
     wheel index when ``detect_cuda_tag()`` finds a driver, CPU wheel
-    otherwise), ``"deps"`` (the ``package_source()`` DeepFilterNet tree,
-    then flet + platformdirs). ``requirements-gui-runtime.txt`` is the
-    human-readable manifest of the dependency set. pip always runs under
-    the managed venv's own python.
+    otherwise), ``"deps"`` (source runs install the ``package_source()``
+    DeepFilterNet tree; frozen runs install the prebuilt ``deepfilterlib``
+    wheel instead — the bundled tree cannot be pip-installed because its
+    pyproject references ``../pyDF``, which exists only in a source
+    checkout — then flet + platformdirs).
+    ``requirements-gui-runtime.txt`` is the human-readable manifest of the
+    dependency set. pip always runs under the managed venv's own python.
     """
     venv_dir = runtime_dir() / "venv"
     progress(PHASE_VENV, 0.1)
@@ -199,7 +203,10 @@ def ensure_runtime(progress: Callable[[str, float], None]) -> RuntimeInfo:
     _pip_install(python, *torch_specs)
 
     progress(PHASE_DEPS, 0.7)
-    _pip_install(python, str(package_source()))
+    if is_frozen():
+        _pip_install(python, "deepfilterlib")
+    else:
+        _pip_install(python, str(package_source()))
     _pip_install(python, "flet>=1.0,<2.0", "platformdirs")
     return RuntimeInfo(mode="venv", python=python)
 
@@ -209,9 +216,13 @@ def ensure_gui_process(selftest: bool = False) -> bool:
 
     Returns False to continue in-process (current environment already
     ready); otherwise ensures the managed runtime, spawns the relaunched
-    child ``<runtime python> -m gui --runtime-child`` with PYTHONPATH set
-    to ``gui_source_parent()`` (the repository root in source mode, the
-    bundled data directory when frozen), and returns True (caller must exit).
+    child ``<runtime python> -m gui --runtime-child`` and returns True
+    (caller must exit). The child PYTHONPATH serves the sources pip skips:
+    source runs use ``gui_source_parent()`` (the repository root; ``df``
+    itself arrives via the pip-installed tree), while frozen runs prepend
+    ``package_source()`` (the bundled ``DeepFilterNet/`` tree, parent of
+    ``df/``) so the child imports the bundled sources with the prebuilt
+    ``deepfilterlib`` wheel providing the compiled extension.
     *selftest* forwards ``--selftest`` to the child so a headless check
     stays headless after the relaunch instead of opening the GUI.
     """
@@ -219,7 +230,11 @@ def ensure_gui_process(selftest: bool = False) -> bool:
         return False
     ensure_runtime(progress=lambda *_: None)
     python = venv_python(runtime_dir() / "venv")
-    env = {**os.environ, "PYTHONPATH": str(gui_source_parent())}
+    if is_frozen():
+        pythonpath = os.pathsep.join([str(package_source()), str(gui_source_parent())])
+    else:
+        pythonpath = str(gui_source_parent())
+    env = {**os.environ, "PYTHONPATH": pythonpath}
     args = [str(python), "-m", "gui", "--runtime-child"]
     if selftest:
         args.append("--selftest")
