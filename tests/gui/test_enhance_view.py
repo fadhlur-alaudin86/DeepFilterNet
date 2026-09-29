@@ -206,3 +206,25 @@ def test_options_snapshot_roundtrips_without_submit(fake_queue, tmp_path):
     view.output_dir_field.value = "/tmp/autosave-dir"
     view.persist_settings()
     assert ConfigStore(tmp_path / "config.json").get("output_dir") == "/tmp/autosave-dir"
+
+
+def test_add_files_button_mounted_in_layout(fake_queue, tmp_path):
+    """The Add Files action must be reachable: it is part of the built tree."""
+    import flet as ft
+
+    view = EnhanceView(ConfigStore(tmp_path / "config.json"), fake_queue, EventBus())
+    tree = view.build()
+
+    found: list = []
+
+    def walk(control):
+        if isinstance(control, ft.FilledButton) and control.content == "Add Files...":
+            found.append(control)
+        for child in getattr(control, "controls", None) or []:
+            walk(child)
+        content = getattr(control, "content", None)
+        if isinstance(content, ft.Control):
+            walk(content)
+
+    walk(tree)
+    assert len(found) == 1

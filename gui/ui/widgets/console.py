@@ -32,6 +32,9 @@ _DEFAULT_RANK = 20
 
 SAVE_FILE_NAME = "enhance-log.txt"
 
+# Shown in the output area while the ring buffer has no visible lines.
+EMPTY_HINT = "No log entries yet - run an enhancement to see output here."
+
 
 class Console:
     """Scrollable log console with a level dropdown and a 2000-line ring buffer.
@@ -76,6 +79,7 @@ class Console:
             font_family="monospace",
             selectable=True,
         )
+        self._render()  # show the empty hint until the first record arrives
 
     # ------------------------------------------------------------------ data
 
@@ -131,7 +135,7 @@ class Console:
     # ---------------------------------------------------------------- updates
 
     def _render(self) -> None:
-        self.output.value = self.visible_text()
+        self.output.value = self.visible_text() or EMPTY_HINT
 
     def _refresh(self) -> None:
         """Push mutations to the client when running outside a Flet event."""
