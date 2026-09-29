@@ -19,6 +19,9 @@ from gui.core.jobs import Job, JobQueue, JobState
 # Terminal states: no further queue action applies to the job.
 _TERMINAL = (JobState.DONE, JobState.FAILED, JobState.CANCELLED)
 
+# Shown as a placeholder card while the queue holds no jobs.
+EMPTY_QUEUE_HINT = "No jobs yet - add audio files in Enhance and press Enhance All."
+
 
 class QueueView:
     """Queue page: job cards with per-job controls.
@@ -56,10 +59,22 @@ class QueueView:
         """Rebuild every job card from the queue's current order and states."""
         jobs = self.queue.jobs
         last_index = len(jobs) - 1
-        self.cards.controls = [
-            self._job_card(job, index, last_index) for index, job in enumerate(jobs)
-        ]
+        if jobs:
+            self.cards.controls = [
+                self._job_card(job, index, last_index) for index, job in enumerate(jobs)
+            ]
+        else:
+            self.cards.controls = [self._empty_card()]
         self._refresh()
+
+    def _empty_card(self) -> ft.Control:
+        """Placeholder card shown while the queue holds no jobs."""
+        return ft.Container(
+            content=ft.Text(EMPTY_QUEUE_HINT, size=13),
+            padding=ft.Padding.all(10),
+            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+            border_radius=ft.BorderRadius.all(8),
+        )
 
     # ------------------------------------------------------------------ cards
 

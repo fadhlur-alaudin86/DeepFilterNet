@@ -247,6 +247,31 @@ def test_console_caps_at_2000_lines(console):
     assert "line 2499" in console.output.value, "newest line must render"
 
 
+def test_console_shows_hint_when_empty(console):
+    from gui.ui.widgets.console import EMPTY_HINT
+
+    assert console.output.value == EMPTY_HINT, "empty console must show the hint"
+    console.append(AppEvent("log", {"level": "INFO", "text": "first-line-marker"}))
+    assert "first-line-marker" in console.output.value, "first line must replace the hint"
+    assert EMPTY_HINT not in console.output.value, "hint must vanish once lines arrive"
+
+
+def test_queue_shows_hint_when_empty(queue_view):
+    from gui.ui.pages.queue_view import EMPTY_QUEUE_HINT
+
+    assert len(queue_view.cards.controls) == 1, "empty queue must show one placeholder card"
+    texts = " ".join(text.value or "" for text in find_controls(queue_view.cards, ft.Text))
+    assert EMPTY_QUEUE_HINT in texts, f"placeholder hint missing from {texts!r}"
+
+
+def test_queue_hint_vanishes_after_submit(queue_view, job):
+    from gui.ui.pages.queue_view import EMPTY_QUEUE_HINT
+
+    texts = " ".join(text.value or "" for text in find_controls(queue_view.cards, ft.Text))
+    assert EMPTY_QUEUE_HINT not in texts, "placeholder must vanish once jobs arrive"
+    assert "a.wav" in texts, "job card must render instead"
+
+
 def test_settings_theme_change_persists(settings_view, tmp_path):
     settings_view.theme_dropdown.value = "LIGHT"
     settings_view.save()
