@@ -259,7 +259,6 @@ class EnhanceView:
                         self.suffix_switch,
                     ],
                     spacing=12,
-                    wrap=True,
                 ),
                 ft.Text("Standard options", size=14, weight=ft.FontWeight.W_600),
                 ft.Row(

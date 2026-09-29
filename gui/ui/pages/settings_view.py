@@ -96,7 +96,6 @@ class SettingsView:
                     ft.Row(
                         [self.output_dir_field, self.browse_button],
                         spacing=12,
-                        wrap=True,
                     ),
                     self.theme_dropdown,
                     ft.Text("Application", size=14, weight=ft.FontWeight.W_600),
