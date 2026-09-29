@@ -80,10 +80,10 @@ class EnhanceView:
 
         # Inputs and standard options.
         self.file_list = FileList()
-        # One picker for files, one for directories; Flet 1.0 registers
-        # Service controls with the page at construction time, and both
-        # dialogs return their result to the awaiting call (on_result is not
-        # emitted for API-driven dialogs). The extra tuple reference matters:
+        # Service controls auto-register with the page on construction
+        # (Flet 1.0 Service.__post_init__); they must NOT go into the view
+        # tree or page.overlay (the client would try to render them as
+        # widgets: "Unknown control"). The extra tuple reference matters:
         # after every event Flet drops services whose refcount shows no live
         # owner (session.unregister_services), so a single attribute is not
         # enough to keep the pickers alive.
@@ -243,7 +243,10 @@ class EnhanceView:
                 ft.Row(
                     [
                         ft.Text("Enhance", size=20, weight=ft.FontWeight.W_600),
-                        self.enhance_button,
+                        ft.Row(
+                            [self.add_files_button, self.enhance_button],
+                            spacing=8,
+                        ),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
